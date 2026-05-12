@@ -1,0 +1,2 @@
+"""Market API adapter package."""
+

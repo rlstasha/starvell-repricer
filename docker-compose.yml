@@ -1,0 +1,67 @@
+name: starvell-repricer
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: repricer
+      POSTGRES_USER: repricer
+      POSTGRES_PASSWORD: repricer
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U repricer -d repricer"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  migrate:
+    build: .
+    env_file: .env
+    command: alembic upgrade head
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  seed:
+    build: .
+    env_file: .env
+    command: python -m scripts.seed_positions
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  worker:
+    build: .
+    env_file: .env
+    command: python -m app.worker_main
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  bot:
+    build: .
+    env_file: .env
+    command: python -m app.bot_main
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
