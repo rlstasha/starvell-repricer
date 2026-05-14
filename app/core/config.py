@@ -23,6 +23,8 @@ class Settings(BaseSettings):
     market_api_token: str = ""
     market_session_cookie: str = ""
     market_csrf_token: str = ""
+    market_account_info_url: str = ""
+    market_my_lots_url: str = ""
 
     own_seller_id: str | None = None
     own_seller_username: str | None = None

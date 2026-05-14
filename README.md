@@ -30,13 +30,47 @@ app/market/client.py
 Класс `StarvellClient` содержит методы-заглушки:
 
 ```python
+check_connection()
 get_market_offers(position_amount: int, lot_id: str | None)
 get_my_lot(position_amount: int, lot_id: str | None)
+get_my_lots()
 update_my_lot_price(position_amount: int, lot_id: str | None, new_price: Decimal)
 get_account_info()
 ```
 
+Реальные endpoint-ы сайта не угадываются. Для безопасной проверки подключения можно
+указать найденные через DevTools GET URL:
+
+```env
+MARKET_ACCOUNT_INFO_URL=
+MARKET_MY_LOTS_URL=
+```
+
 Когда будут точные endpoint-ы сайта, нужно заменить TODO внутри этого класса. Остальной проект менять не нужно.
+
+## Проверка подключения Starvell
+
+Проверка выполняет только безопасные GET-запросы. Она не меняет цены и не вызывает
+POST/PATCH/PUT:
+
+```bash
+python -m app.check_starvell_connection
+```
+
+Команда:
+
+- проверяет авторизацию, если настроен `MARKET_ACCOUNT_INFO_URL`;
+- показывает `seller_id` и `username`, если они найдены в ответе;
+- показывает, видит ли мои лоты, если настроен `MARKET_MY_LOTS_URL`;
+- не выводит `MARKET_SESSION_COOKIE`, токены или CSRF;
+- объясняет ошибки `401`, `403`, `429`, `500` простым текстом.
+
+Если URL еще неизвестны, откройте Starvell в браузере, DevTools -> Network, и найдите:
+
+- GET-запрос кабинета/профиля, который возвращает текущего пользователя;
+- GET-запрос кабинета, который возвращает мои активные лоты.
+
+Эти URL нужно добавить в `.env` как `MARKET_ACCOUNT_INFO_URL` и `MARKET_MY_LOTS_URL`.
 
 ## Настройка
 
@@ -54,6 +88,8 @@ OWNER_TELEGRAM_IDS=123456789,987654321
 OWN_SELLER_ID=...
 OWN_SELLER_USERNAME=...
 MARKET_SESSION_COOKIE=...
+MARKET_ACCOUNT_INFO_URL=...
+MARKET_MY_LOTS_URL=...
 ```
 
 Секреты не коммитить. Файл `.env` находится в `.gitignore`.
