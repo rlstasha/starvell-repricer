@@ -60,6 +60,7 @@ class Position(TimestampMixin, Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     robux_amount: Mapped[int] = mapped_column(Integer, unique=True, index=True, nullable=False)
+    lot_id: Mapped[str | None] = mapped_column(String(64))
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     priority: Mapped[str] = mapped_column(String(16), default=PriorityLevel.NORMAL.value, nullable=False)
     strategy: Mapped[str] = mapped_column(

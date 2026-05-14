@@ -9,7 +9,7 @@ from app.core.logging import get_logger
 from app.db.repositories import AppSettingsRepository, PositionRepository, WorkerStateRepository
 from app.market.client import StarvellClient
 from app.repricer.engine import RepricerEngine
-from app.repricer.priority_queue import WeightedPositionQueue
+from app.repricer.priority_queue import PercentagePositionQueue
 from app.repricer.rate_limiter import RedisFixedWindowRateLimiter
 
 
@@ -24,9 +24,9 @@ class RepricerScheduler:
         self.settings = settings
         self.session_factory = session_factory
         self.redis = redis
-        self.queue = WeightedPositionQueue(
-            high_weight=settings.high_priority_weight,
-            normal_weight=settings.normal_priority_weight,
+        self.queue = PercentagePositionQueue(
+            high_percent=settings.high_priority_percent,
+            normal_percent=settings.normal_priority_percent,
         )
         self.logger = get_logger(__name__)
 

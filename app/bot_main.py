@@ -22,8 +22,8 @@ async def main() -> None:
 
     if not settings.telegram_bot_token:
         raise RuntimeError("TELEGRAM_BOT_TOKEN is required to start bot")
-    if settings.owner_telegram_id is None:
-        raise RuntimeError("OWNER_TELEGRAM_ID is required to start bot")
+    if not settings.allowed_owner_telegram_ids:
+        raise RuntimeError("OWNER_TELEGRAM_IDS or OWNER_TELEGRAM_ID is required to start bot")
 
     session_factory = create_session_factory(settings=settings)
     async with session_factory() as session:

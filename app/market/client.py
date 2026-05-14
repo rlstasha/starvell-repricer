@@ -70,7 +70,7 @@ class StarvellClient:
         response.raise_for_status()
         return response
 
-    async def get_market_offers(self, position_amount: int) -> list[MarketOffer]:
+    async def get_market_offers(self, position_amount: int, lot_id: str | None) -> list[MarketOffer]:
         """TODO: fetch market offers for a robux package.
 
         Expected replacement shape:
@@ -82,21 +82,28 @@ class StarvellClient:
         self.logger.warning(
             "starvell_get_market_offers_stub",
             position_amount=position_amount,
+            lot_id=lot_id,
             todo="implement real Starvell offers request",
         )
         return []
 
-    async def get_my_lot(self, position_amount: int) -> OwnLot | None:
+    async def get_my_lot(self, position_amount: int, lot_id: str | None) -> OwnLot | None:
         """TODO: fetch own lot for position_amount and return OwnLot or None."""
         await self.rate_limiter.acquire()
         self.logger.warning(
             "starvell_get_my_lot_stub",
             position_amount=position_amount,
+            lot_id=lot_id,
             todo="implement real Starvell own-lot request",
         )
         return None
 
-    async def update_my_lot_price(self, position_amount: int, new_price: Decimal) -> UpdateResult:
+    async def update_my_lot_price(
+        self,
+        position_amount: int,
+        lot_id: str | None,
+        new_price: Decimal,
+    ) -> UpdateResult:
         """TODO: update own lot price on Starvell/Statvell.
 
         The stub raises instead of pretending to update a real lot. In dry-run mode the engine
@@ -106,6 +113,7 @@ class StarvellClient:
         self.logger.error(
             "starvell_update_my_lot_price_stub",
             position_amount=position_amount,
+            lot_id=lot_id,
             new_price=str(new_price),
             todo="implement real Starvell price update request",
         )
@@ -123,4 +131,3 @@ class StarvellClient:
             seller_username=self.settings.own_seller_username,
             raw_payload=None,
         )
-

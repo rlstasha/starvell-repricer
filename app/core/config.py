@@ -1,7 +1,7 @@
 from decimal import Decimal
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
 
     telegram_bot_token: str = ""
+    owner_telegram_ids: str = ""
     owner_telegram_id: int | None = None
 
     market_base_url: str = "https://starvell.com"
@@ -34,12 +35,42 @@ class Settings(BaseSettings):
     default_min_price: Decimal = Decimal("0")
     default_max_price: Decimal = Decimal("999999")
 
-    high_priority_weight: int = Field(default=5, ge=1)
-    normal_priority_weight: int = Field(default=1, ge=1)
+    high_priority_percent: int = Field(default=70, ge=0, le=100)
+    normal_priority_percent: int = Field(default=30, ge=0, le=100)
     scheduler_idle_sleep_seconds: float = Field(default=1.0, ge=0.1)
+
+    @field_validator("owner_telegram_ids")
+    @classmethod
+    def validate_owner_telegram_ids(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            return ""
+
+        ids: list[str] = []
+        for raw_item in value.split(","):
+            item = raw_item.strip()
+            if not item or not item.isdigit() or int(item) <= 0:
+                raise ValueError(
+                    "OWNER_TELEGRAM_IDS must contain comma-separated positive integer IDs"
+                )
+            ids.append(item)
+        return ",".join(ids)
+
+    @model_validator(mode="after")
+    def validate_priority_percentages(self) -> "Settings":
+        if self.high_priority_percent + self.normal_priority_percent != 100:
+            raise ValueError("HIGH_PRIORITY_PERCENT and NORMAL_PRIORITY_PERCENT must sum to 100")
+        return self
+
+    @property
+    def allowed_owner_telegram_ids(self) -> set[int]:
+        if self.owner_telegram_ids:
+            return {int(item) for item in self.owner_telegram_ids.split(",")}
+        if self.owner_telegram_id is not None:
+            return {self.owner_telegram_id}
+        return set()
 
 
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
-

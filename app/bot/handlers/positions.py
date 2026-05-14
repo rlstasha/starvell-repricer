@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio.session import AsyncSession
 
 from app.bot.formatters import format_competitors, format_position_card, format_price_test
 from app.bot.keyboards import position_card_keyboard, positions_keyboard
+from app.core.config import Settings
 from app.db.models import Position
 from app.db.repositories import PositionRepository
 from app.market.schemas import MarketOffer
@@ -21,7 +22,9 @@ EDIT_LABELS = {
     "max_price": "максимальную цену",
     "step": "шаг",
     "min_rating": "минимальный рейтинг",
+    "lot_id": "ID лота",
 }
+LOT_ID_CLEAR_VALUES = {"-", "нет", "не указан"}
 
 
 class EditPositionState(StatesGroup):
@@ -43,12 +46,13 @@ async def list_positions(
 async def position_actions(
     callback: CallbackQuery,
     session_factory: async_sessionmaker[AsyncSession],
+    settings: Settings,
     state: FSMContext,
 ) -> None:
     parts = callback.data.split(":")
 
     if len(parts) == 2:
-        await _show_card(callback, session_factory, int(parts[1]))
+        await _show_card(callback, session_factory, settings, int(parts[1]))
         return
 
     action = parts[1]
@@ -61,7 +65,14 @@ async def position_actions(
             if position:
                 position.enabled = not position.enabled
                 await session.commit()
-        await _show_card(callback, session_factory, amount)
+        await _show_card(callback, session_factory, settings, amount)
+        return
+
+    if action == "toggle_priority":
+        async with session_factory() as session:
+            await PositionRepository(session).toggle_priority(amount)
+            await session.commit()
+        await _show_card(callback, session_factory, settings, amount)
         return
 
     if action == "toggle_ignore":
@@ -71,7 +82,7 @@ async def position_actions(
             if position:
                 position.settings.ignore_no_rating = not position.settings.ignore_no_rating
                 await session.commit()
-        await _show_card(callback, session_factory, amount)
+        await _show_card(callback, session_factory, settings, amount)
         return
 
     if action == "competitors":
@@ -89,7 +100,10 @@ async def position_actions(
             return
         await state.set_state(EditPositionState.waiting_for_value)
         await state.update_data(amount=amount, field_name=field_name)
-        await callback.message.answer(f"Введите новую {EDIT_LABELS[field_name]}.")
+        if field_name == "lot_id":
+            await callback.message.answer("Введите ID лота. Чтобы очистить, отправьте: -")
+        else:
+            await callback.message.answer(f"Введите новую {EDIT_LABELS[field_name]}.")
         await callback.answer()
         return
 
@@ -100,17 +114,12 @@ async def position_actions(
 async def save_position_value(
     message: Message,
     session_factory: async_sessionmaker[AsyncSession],
+    settings: Settings,
     state: FSMContext,
 ) -> None:
     data = await state.get_data()
     amount = int(data["amount"])
     field_name = data["field_name"]
-
-    try:
-        value = Decimal(message.text.strip().replace(",", "."))
-    except (InvalidOperation, AttributeError):
-        await message.answer("Нужно число. Например: 499 или 4.5")
-        return
 
     async with session_factory() as session:
         repo = PositionRepository(session)
@@ -120,18 +129,33 @@ async def save_position_value(
             await message.answer("Позиция не найдена.")
             return
 
-        error = _validate_numeric_setting(position, field_name, value)
-        if error:
-            await message.answer(error)
-            return
+        if field_name == "lot_id":
+            lot_id, error = _parse_lot_id(message.text)
+            if error:
+                await message.answer(error)
+                return
+            await repo.set_lot_id(amount, lot_id)
+        else:
+            try:
+                value = Decimal(message.text.strip().replace(",", "."))
+            except (InvalidOperation, AttributeError):
+                await message.answer("Нужно число. Например: 499 или 4.5")
+                return
 
-        await repo.update_setting(amount, field_name, value)
+            error = _validate_numeric_setting(position, field_name, value)
+            if error:
+                await message.answer(error)
+                return
+
+            await repo.update_setting(amount, field_name, value)
+
         await session.commit()
         position = await repo.get_by_amount(amount)
+        counts = await repo.count_by_priority(enabled_only=True)
 
     await state.clear()
     await message.answer(
-        "Настройка сохранена.\n\n" + format_position_card(position),
+        "Настройка сохранена.\n\n" + _format_position_card(position, settings, counts),
         reply_markup=position_card_keyboard(position),
     )
 
@@ -139,15 +163,18 @@ async def save_position_value(
 async def _show_card(
     callback: CallbackQuery,
     session_factory: async_sessionmaker[AsyncSession],
+    settings: Settings,
     amount: int,
 ) -> None:
     async with session_factory() as session:
-        position = await PositionRepository(session).get_by_amount(amount)
+        repo = PositionRepository(session)
+        position = await repo.get_by_amount(amount)
+        counts = await repo.count_by_priority(enabled_only=True)
     if position is None:
         await callback.answer("Позиция не найдена.", show_alert=True)
         return
     await callback.message.edit_text(
-        format_position_card(position),
+        _format_position_card(position, settings, counts),
         reply_markup=position_card_keyboard(position),
     )
     await callback.answer()
@@ -234,3 +261,28 @@ def _validate_numeric_setting(position: Position, field_name: str, value: Decima
         return "Максимальная цена не может быть ниже минимальной."
     return None
 
+
+def _parse_lot_id(raw_value: str | None) -> tuple[str | None, str | None]:
+    value = (raw_value or "").strip()
+    if value.casefold() in LOT_ID_CLEAR_VALUES:
+        return None, None
+    if not value:
+        return None, "Введите ID лота или отправьте -, чтобы очистить."
+    if not value.isdigit() or int(value) <= 0:
+        return None, "ID лота должен быть положительным числом."
+    return value, None
+
+
+def _format_position_card(
+    position: Position,
+    settings: Settings,
+    counts: dict[str, int],
+) -> str:
+    return format_position_card(
+        position,
+        request_limit=settings.request_limit_per_minute,
+        high_percent=settings.high_priority_percent,
+        normal_percent=settings.normal_priority_percent,
+        high_count=counts.get("high", 0),
+        normal_count=counts.get("normal", 0),
+    )

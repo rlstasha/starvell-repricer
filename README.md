@@ -9,8 +9,9 @@
 - Python 3.12, aiogram 3, SQLAlchemy 2, PostgreSQL, Redis, Docker Compose.
 - Модели БД для позиций, настроек, состояния, снимков конкурентов и логов обновлений.
 - Seed позиций: `40, 80, 200, 400, 500, 800, 1000, 1200, 1700, 2000, 2100, 2500, 3600, 4500, 10000, 22500`.
+- Seed ID лотов для всех известных позиций. Для `40` робуксов ID пока не указан.
 - High priority для `400, 500, 800, 1000, 1200, 1700, 2000`.
-- Weighted queue: high-позиции получают большую часть проходов.
+- Priority queue: `70%` лимита на high-позиции и `30%` на normal-позиции.
 - Rate limiter: не больше `100` запросов в минуту через Redis.
 - Фильтр конкурентов: рейтинг, отсутствие рейтинга, свой продавец, неактивный продавец.
 - Стратегия `undercut_by_1`: цена конкурента минус `step`, с ограничениями `min_price` и `max_price`.
@@ -29,9 +30,9 @@ app/market/client.py
 Класс `StarvellClient` содержит методы-заглушки:
 
 ```python
-get_market_offers(position_amount: int)
-get_my_lot(position_amount: int)
-update_my_lot_price(position_amount: int, new_price: Decimal)
+get_market_offers(position_amount: int, lot_id: str | None)
+get_my_lot(position_amount: int, lot_id: str | None)
+update_my_lot_price(position_amount: int, lot_id: str | None, new_price: Decimal)
 get_account_info()
 ```
 
@@ -49,7 +50,7 @@ cp .env.example .env
 
 ```env
 TELEGRAM_BOT_TOKEN=...
-OWNER_TELEGRAM_ID=...
+OWNER_TELEGRAM_IDS=123456789,987654321
 OWN_SELLER_ID=...
 OWN_SELLER_USERNAME=...
 MARKET_SESSION_COOKIE=...
@@ -146,7 +147,13 @@ docker compose up bot
 - `🧪 Dry-run включить/выключить`
 - `📝 Логи последних действий`
 
-Доступ есть только у пользователя с ID из `.env`:
+Доступ есть у всех пользователей из `OWNER_TELEGRAM_IDS`:
+
+```env
+OWNER_TELEGRAM_IDS=123456789,987654321
+```
+
+Если `OWNER_TELEGRAM_IDS` пустой, работает старое поле:
 
 ```env
 OWNER_TELEGRAM_ID=123456789
@@ -167,16 +174,57 @@ OWNER_TELEGRAM_ID=123456789
 ### Как поменять владельца
 
 1. Остановить контейнер бота.
-2. Изменить `OWNER_TELEGRAM_ID` в `.env`.
+2. Изменить `OWNER_TELEGRAM_IDS` в `.env`.
 3. Запустить бота снова:
 
 ```bash
 docker compose up -d bot
 ```
 
+### Как добавить владельца
+
+Добавьте Telegram ID через запятую:
+
+```env
+OWNER_TELEGRAM_IDS=123456789,987654321,555555555
+```
+
+Пробелы вокруг запятых допустимы. Если в списке есть нечисловой ID, бот не стартует.
+
+### Как поменять ID лота
+
+1. Откройте `/start`.
+2. Нажмите `📦 Позиции`.
+3. Выберите позицию.
+4. Нажмите `🔗 ID лота`.
+5. Отправьте новый числовой ID.
+
+Чтобы очистить ID, отправьте `-`. Для позиции без ID бот показывает:
+
+```text
+ID лота: не указан
+Не найден ID лота. Репрайс невозможен.
+```
+
+### Приоритеты
+
+В карточке позиции кнопка `⚡ Приоритет` переключает `высокий` и `обычный`.
+
+По умолчанию общий лимит делится так:
+
+```env
+REQUEST_LIMIT_PER_MINUTE=100
+HIGH_PRIORITY_PERCENT=70
+NORMAL_PRIORITY_PERCENT=30
+```
+
+В статусе бот показывает, сколько запросов в минуту идет на high и normal, сколько
+включенных позиций каждого типа и примерную частоту проверки. Расчет исходит из того,
+что одна проверка позиции занимает примерно два запроса к Starvell.
+
 ### Как проверить защиту
 
-1. Запустить бота с вашим `OWNER_TELEGRAM_ID`.
+1. Запустить бота с вашим ID в `OWNER_TELEGRAM_IDS`.
 2. Написать `/start` с вашего Telegram-аккаунта: должно открыться меню.
 3. Написать `/start` с другого аккаунта: бот должен ответить `Нет доступа`.
 
@@ -211,6 +259,6 @@ tests/                            # pytest
 
 1. Передать проект без `.env`.
 2. Новый владелец создает `.env` из `.env.example`.
-3. Указывает свой `OWNER_TELEGRAM_ID`.
+3. Указывает свой `OWNER_TELEGRAM_IDS`.
 4. Указывает новый `TELEGRAM_BOT_TOKEN`.
 5. Запускает `docker compose up --build`.

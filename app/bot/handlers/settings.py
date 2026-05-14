@@ -26,8 +26,8 @@ async def general_settings(
         format_general_settings(
             dry_run=dry_run,
             request_limit=settings.request_limit_per_minute,
-            high_weight=settings.high_priority_weight,
-            normal_weight=settings.normal_priority_weight,
+            high_percent=settings.high_priority_percent,
+            normal_percent=settings.normal_priority_percent,
         ),
         reply_markup=general_settings_keyboard(dry_run=dry_run),
     )
@@ -77,6 +77,7 @@ async def show_status(
         success_count = await positions.count_price_logs(UpdateStatus.SUCCESS)
         error_count = await positions.count_price_logs(UpdateStatus.FAILED)
         recent_errors = await positions.list_recent_errors(limit=5)
+        priority_counts = await positions.count_by_priority(enabled_only=True)
 
     await callback.message.edit_text(
         format_status(
@@ -84,6 +85,10 @@ async def show_status(
             dry_run=dry_run,
             request_usage=request_usage,
             request_limit=settings.request_limit_per_minute,
+            high_percent=settings.high_priority_percent,
+            normal_percent=settings.normal_priority_percent,
+            high_count=priority_counts.get("high", 0),
+            normal_count=priority_counts.get("normal", 0),
             success_count=success_count,
             error_count=error_count,
             recent_errors=recent_errors,
@@ -99,11 +104,10 @@ async def show_recent_logs(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     async with session_factory() as session:
-        logs = await PositionRepository(session).list_recent_price_logs(limit=10)
+        logs = await PositionRepository(session).list_recent_price_logs_with_amounts(limit=10)
 
     await callback.message.edit_text(
         format_logs(logs),
         reply_markup=back_to_main_keyboard(),
     )
     await callback.answer()
-

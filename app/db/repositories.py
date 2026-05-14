@@ -42,6 +42,23 @@ DEFAULT_POSITIONS = [
     22500,
 ]
 HIGH_PRIORITY_POSITIONS = {400, 500, 800, 1000, 1200, 1700, 2000}
+DEFAULT_LOT_IDS = {
+    80: "1996",
+    200: "1998",
+    400: "1999",
+    500: "2000",
+    800: "2002",
+    1000: "2003",
+    1200: "2004",
+    1700: "2005",
+    2000: "2006",
+    2100: "2007",
+    2500: "2008",
+    3600: "2009",
+    4500: "2010",
+    10000: "2011",
+    22500: "2012",
+}
 
 
 class PositionRepository:
@@ -58,15 +75,23 @@ class PositionRepository:
         ignore_no_rating: bool,
         fallback_behavior: str = FallbackBehavior.KEEP_CURRENT.value,
     ) -> None:
-        existing = set(
-            await self.session.scalars(select(Position.robux_amount).where(Position.robux_amount.in_(DEFAULT_POSITIONS)))
-        )
+        existing = {
+            position.robux_amount: position
+            for position in await self.session.scalars(
+                select(Position).where(Position.robux_amount.in_(DEFAULT_POSITIONS))
+            )
+        }
+        for amount, position in existing.items():
+            if position.lot_id is None and amount in DEFAULT_LOT_IDS:
+                position.lot_id = DEFAULT_LOT_IDS[amount]
+
         for amount in DEFAULT_POSITIONS:
             if amount in existing:
                 continue
 
             position = Position(
                 robux_amount=amount,
+                lot_id=DEFAULT_LOT_IDS.get(amount),
                 enabled=True,
                 priority=(
                     PriorityLevel.HIGH.value
@@ -115,6 +140,24 @@ class PositionRepository:
             return False
         position.enabled = enabled
         return True
+
+    async def set_lot_id(self, amount: int, lot_id: str | None) -> bool:
+        position = await self.get_by_amount(amount)
+        if position is None:
+            return False
+        position.lot_id = lot_id
+        return True
+
+    async def toggle_priority(self, amount: int) -> Position | None:
+        position = await self.get_by_amount(amount)
+        if position is None:
+            return None
+        position.priority = (
+            PriorityLevel.NORMAL.value
+            if position.priority == PriorityLevel.HIGH.value
+            else PriorityLevel.HIGH.value
+        )
+        return position
 
     async def update_setting(self, amount: int, field_name: str, value) -> bool:
         position = await self.get_by_amount(amount)
@@ -242,6 +285,17 @@ class PositionRepository:
         )
         return list(result)
 
+    async def list_recent_price_logs_with_amounts(
+        self, *, limit: int = 10
+    ) -> list[tuple[PriceUpdateLog, int | None]]:
+        result = await self.session.execute(
+            select(PriceUpdateLog, Position.robux_amount)
+            .join(Position, Position.id == PriceUpdateLog.position_id, isouter=True)
+            .order_by(PriceUpdateLog.created_at.desc())
+            .limit(limit)
+        )
+        return [(log, amount) for log, amount in result.all()]
+
     async def list_recent_errors(self, *, limit: int = 5) -> list[PriceUpdateLog]:
         result = await self.session.scalars(
             select(PriceUpdateLog)
@@ -250,6 +304,13 @@ class PositionRepository:
             .limit(limit)
         )
         return list(result)
+
+    async def count_by_priority(self, *, enabled_only: bool = False) -> dict[str, int]:
+        query = select(Position.priority, func.count()).group_by(Position.priority)
+        if enabled_only:
+            query = query.where(Position.enabled.is_(True))
+        result = await self.session.execute(query)
+        return {priority: int(count) for priority, count in result.all()}
 
 
 class ApiLogRepository:

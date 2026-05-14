@@ -26,7 +26,7 @@ def positions_keyboard(positions: list[Position]) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     for position in positions:
         marker = "🟢" if position.enabled else "🔴"
-        priority = "high" if position.priority == "high" else "normal"
+        priority = "высокий" if position.priority == "high" else "обычный"
         rows.append(
             [
                 InlineKeyboardButton(
@@ -58,6 +58,10 @@ def position_card_keyboard(position: Position) -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="✏️ Шаг", callback_data=f"position:edit:step:{amount}"),
                 InlineKeyboardButton(text="⭐ Мин. рейтинг", callback_data=f"position:edit:min_rating:{amount}"),
             ],
+            [
+                InlineKeyboardButton(text="🔗 ID лота", callback_data=f"position:edit:lot_id:{amount}"),
+                InlineKeyboardButton(text="⚡ Приоритет", callback_data=f"position:toggle_priority:{amount}"),
+            ],
             [InlineKeyboardButton(text=ignore_text, callback_data=f"position:toggle_ignore:{amount}")],
             [InlineKeyboardButton(text="📊 Конкуренты", callback_data=f"position:competitors:{amount}")],
             [InlineKeyboardButton(text="🧪 Тест расчета цены", callback_data=f"position:test_calc:{amount}")],
@@ -75,4 +79,3 @@ def general_settings_keyboard(*, dry_run: bool) -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:main")],
         ]
     )
-

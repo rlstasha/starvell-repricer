@@ -63,8 +63,22 @@ class RepricerEngine:
             return ProcessResult(position_amount, "failed", str(exc), None, None, None)
 
     async def _process_loaded_position(self, position: Position) -> ProcessResult:
-        offers = await self.starvell_client.get_market_offers(position.robux_amount)
-        own_lot = await self.starvell_client.get_my_lot(position.robux_amount)
+        if not position.lot_id:
+            await self._record_missing_lot(position)
+            return ProcessResult(
+                position.robux_amount,
+                UpdateStatus.SKIPPED.value,
+                "missing_lot_id",
+                position.state.current_own_price if position.state else None,
+                None,
+                position.state.last_seen_competitor_price if position.state else None,
+            )
+
+        offers = await self.starvell_client.get_market_offers(
+            position.robux_amount,
+            position.lot_id,
+        )
+        own_lot = await self.starvell_client.get_my_lot(position.robux_amount, position.lot_id)
         current_price = self._current_price(position, own_lot)
 
         filter_result = self.competitor_filter.filter(
@@ -154,7 +168,11 @@ class RepricerEngine:
                 decision.competitor_price,
             )
 
-        await self.starvell_client.update_my_lot_price(position.robux_amount, decision.target_price)
+        await self.starvell_client.update_my_lot_price(
+            position.robux_amount,
+            position.lot_id,
+            decision.target_price,
+        )
         await self._record_decision(
             position=position,
             decision=decision,
@@ -236,6 +254,30 @@ class RepricerEngine:
             reason=str(exc),
         )
         await self.session.commit()
+
+    async def _record_missing_lot(self, position: Position) -> None:
+        message = "Не найден ID лота. Репрайс невозможен."
+        await self.positions.update_state(
+            position,
+            last_seen_competitor_price=(
+                position.state.last_seen_competitor_price if position.state else None
+            ),
+            current_own_price=position.state.current_own_price if position.state else None,
+            calculated_price=None,
+            error_status="missing_lot_id",
+            error_message=message,
+            success=False,
+        )
+        await self.positions.add_price_log(
+            position,
+            old_price=position.state.current_own_price if position.state else None,
+            new_price=None,
+            competitor_price=position.state.last_seen_competitor_price if position.state else None,
+            competitor_seller_id=None,
+            competitor_seller_username=None,
+            status=UpdateStatus.SKIPPED.value,
+            reason="missing_lot_id",
+        )
 
     def _current_price(self, position: Position, own_lot: OwnLot | None) -> Decimal | None:
         if own_lot is not None:
