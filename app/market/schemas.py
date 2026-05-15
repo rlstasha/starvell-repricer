@@ -33,6 +33,8 @@ class MyLotSummary:
     title: str | None
     position_amount: int | None
     price: Decimal | None
+    seller_id: str | None = None
+    stock: int | None = None
     is_active: bool | None = None
     raw_payload: dict[str, Any] | None = field(default=None, compare=False)
 

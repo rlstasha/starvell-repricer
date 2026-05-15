@@ -1,3 +1,4 @@
+from collections import Counter
 from dataclasses import dataclass
 from decimal import Decimal
 
@@ -74,21 +75,41 @@ class RepricerEngine:
                 position.state.last_seen_competitor_price if position.state else None,
             )
 
-        offers = await self.starvell_client.get_market_offers(
+        market_result = await self.starvell_client.get_market_offers_result(
             position.robux_amount,
             position.lot_id,
         )
+        offers = market_result.offers
         own_lot = await self.starvell_client.get_my_lot(position.robux_amount, position.lot_id)
         current_price = self._current_price(position, own_lot)
 
+        filter_settings = CompetitorFilterSettings(
+            min_rating=position.settings.min_rating,
+            ignore_no_rating=position.settings.ignore_no_rating,
+            own_seller_id=self.settings.own_seller_id,
+            own_seller_username=self.settings.own_seller_username,
+        )
         filter_result = self.competitor_filter.filter(
             offers,
-            CompetitorFilterSettings(
-                min_rating=position.settings.min_rating,
-                ignore_no_rating=position.settings.ignore_no_rating,
-                own_seller_id=self.settings.own_seller_id,
-                own_seller_username=self.settings.own_seller_username,
-            ),
+            filter_settings,
+        )
+        ignored_counts = Counter(
+            reason
+            for offer in offers
+            if (reason := self.competitor_filter.ignore_reason(offer, filter_settings))
+        )
+        self.logger.info(
+            "repricer_competitor_diagnostics",
+            position_amount=position.robux_amount,
+            lot_id=position.lot_id,
+            method=market_result.method,
+            url=market_result.url,
+            subcategory_id=market_result.subcategory_id,
+            raw_offer_count=market_result.raw_offer_count,
+            offers_before_filter=len(offers),
+            offers_after_filter=len(filter_result.accepted),
+            parser_rejected_count=market_result.parser_rejected_count,
+            ignored_reasons=dict(ignored_counts),
         )
         await self.positions.add_competitor_snapshots(
             position,
@@ -114,12 +135,12 @@ class RepricerEngine:
                 old_price=current_price,
                 new_price=None,
                 status=UpdateStatus.SKIPPED.value,
-                reason="no_target_price",
+                reason=decision.reason,
             )
             return ProcessResult(
                 position.robux_amount,
                 UpdateStatus.SKIPPED.value,
-                "no_target_price",
+                decision.reason,
                 current_price,
                 None,
                 decision.competitor_price,

@@ -193,7 +193,7 @@ async def _show_competitors(
         await callback.answer("Позиция не найдена.", show_alert=True)
         return
     await callback.message.edit_text(
-        format_competitors(amount, competitors),
+        format_competitors(position, competitors),
         reply_markup=position_card_keyboard(position),
     )
     await callback.answer()

@@ -7,7 +7,7 @@ from app.market.schemas import StarvellConnectionCheck
 from app.repricer.rate_limiter import InMemoryFixedWindowRateLimiter
 
 
-DEVTOOLS_TODO = [
+DEVTOOLS_HINTS = [
     (
         "MARKET_ACCOUNT_INFO_URL: GET-запрос кабинета/профиля, "
         "который возвращает текущего пользователя."
@@ -64,18 +64,33 @@ def _print_result(result: StarvellConnectionCheck) -> None:
             f"{len(active_lots)}"
         )
         for lot in active_lots[:10]:
-            title = f" · {lot.title}" if lot.title else ""
-            amount = f" · {lot.position_amount} робуксов" if lot.position_amount else ""
-            print(f"  - ID {lot.lot_id or 'не найден'}{amount}{title}")
+            parts = [f"ID {lot.lot_id or 'не найден'}"]
+            if lot.position_amount:
+                parts.append(f"{lot.position_amount} робуксов")
+            if lot.title:
+                parts.append(lot.title)
+            if lot.stock is not None:
+                parts.append(f"наличие {lot.stock}")
+            if lot.price is not None:
+                parts.append(f"цена {lot.price} ₽")
+            if lot.seller_id:
+                parts.append(f"seller_id {lot.seller_id}")
+            print(f"  - {' · '.join(parts)}")
     elif result.lots_error:
         print(f"- {result.lots_error}")
+    else:
+        print("- лоты не найдены в ответе")
+        print(
+            "  Проверьте MARKET_SESSION_COOKIE и что MARKET_MY_LOTS_URL "
+            "открывает профиль с активными лотами."
+        )
 
     if not result.account_endpoint_configured or not result.lots_endpoint_configured:
         print()
-        print("TODO: реальные Starvell endpoints пока неизвестны.")
-        print("Я их не угадываю.")
+        print("GET endpoints Starvell пока неизвестны.")
+        print("Я их не угадываю и не делаю небезопасные запросы.")
         print("Нужно найти через DevTools -> Network и добавить в .env:")
-        for item in DEVTOOLS_TODO:
+        for item in DEVTOOLS_HINTS:
             print(f"- {item}")
         print()
         print("Cookie/token не выводятся.")

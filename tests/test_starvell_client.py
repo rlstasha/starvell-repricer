@@ -1,10 +1,18 @@
+import json
 from decimal import Decimal
 
 import httpx
 import pytest
 
 from app.core.config import Settings
-from app.market.client import StarvellClient, explain_http_status
+from app.market.client import (
+    StarvellClient,
+    explain_http_status,
+    parse_starvell_lots_from_html,
+    parse_starvell_market_offers,
+    parse_starvell_market_offers_payload,
+    parse_starvell_own_lot,
+)
 from app.repricer.rate_limiter import InMemoryFixedWindowRateLimiter
 
 
@@ -57,6 +65,39 @@ async def test_get_account_info_uses_safe_get_endpoint() -> None:
 
 
 @pytest.mark.asyncio
+async def test_get_account_info_parses_profile_html() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url.path == "/users/4111"
+        return httpx.Response(
+            200,
+            content="""
+            <html>
+              <head><title>starvell_user - Starvell</title></head>
+              <body><h1>starvell_user</h1></body>
+            </html>
+            """.encode("utf-8"),
+            headers={"content-type": "text/html; charset=utf-8"},
+        )
+
+    client = httpx.AsyncClient(
+        base_url="https://starvell.example",
+        transport=httpx.MockTransport(handler),
+    )
+    settings = Settings(
+        _env_file=None,
+        market_base_url="https://starvell.example",
+        market_account_info_url="https://starvell.example/users/4111",
+    )
+
+    async with StarvellClient(settings, InMemoryFixedWindowRateLimiter(), client) as starvell:
+        account = await starvell.get_account_info()
+
+    assert account.seller_id == "4111"
+    assert account.seller_username == "starvell_user"
+
+
+@pytest.mark.asyncio
 async def test_get_my_lots_uses_safe_get_endpoint() -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         assert request.method == "GET"
@@ -94,6 +135,302 @@ async def test_get_my_lots_uses_safe_get_endpoint() -> None:
     assert lots[0].position_amount == 400
     assert lots[0].price == Decimal("499")
     assert lots[0].is_active is True
+
+
+def test_parse_starvell_lots_from_profile_html_fragment() -> None:
+    html = """
+    <section class="profile-offers">
+      <article>
+        <a href="/offers/1996"><span>80 робуксов</span></a>
+        <div>наличие 927</div>
+        <strong>92.67 ₽</strong>
+      </article>
+      <article>
+        <a href="/offers/2012">22500 робуксов</a>
+        <span>наличие 2</span>
+        <span>25000,50 ₽</span>
+      </article>
+    </section>
+    """
+
+    lots = parse_starvell_lots_from_html(html, default_seller_id="4111")
+
+    assert len(lots) == 2
+    assert lots[0].lot_id == "1996"
+    assert lots[0].title == "80 робуксов"
+    assert lots[0].position_amount == 80
+    assert lots[0].stock == 927
+    assert lots[0].price == Decimal("92.67")
+    assert lots[0].seller_id == "4111"
+    assert lots[1].lot_id == "2012"
+    assert lots[1].position_amount == 22500
+    assert lots[1].price == Decimal("25000.50")
+
+
+def test_parse_starvell_lots_from_next_data_html() -> None:
+    html = """
+    <script id="__NEXT_DATA__" type="application/json">
+    {
+      "props": {
+        "pageProps": {
+          "bff": {
+            "userProfileOffers": [
+              {
+                "id": 1996,
+                "name": "80 робуксов",
+                "amount": 80,
+                "availability": 927,
+                "price": "92.67",
+                "sellerId": 4111
+              }
+            ]
+          }
+        }
+      }
+    }
+    </script>
+    """
+
+    lots = parse_starvell_lots_from_html(html)
+
+    assert len(lots) == 1
+    assert lots[0].lot_id == "1996"
+    assert lots[0].title == "80 робуксов"
+    assert lots[0].position_amount == 80
+    assert lots[0].stock == 927
+    assert lots[0].price == Decimal("92.67")
+    assert lots[0].seller_id == "4111"
+
+
+@pytest.mark.asyncio
+async def test_get_my_lots_parses_html_with_safe_get() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url.path == "/users/4111"
+        return httpx.Response(
+            200,
+            content="""
+            <html>
+              <body>
+                <a href="/offers/1998">200 робуксов</a>
+                <span>наличие 16</span>
+                <span>220 ₽</span>
+              </body>
+            </html>
+            """.encode("utf-8"),
+            headers={"content-type": "text/html; charset=utf-8"},
+        )
+
+    client = httpx.AsyncClient(
+        base_url="https://starvell.example",
+        transport=httpx.MockTransport(handler),
+    )
+    settings = Settings(
+        _env_file=None,
+        market_base_url="https://starvell.example",
+        market_my_lots_url="https://starvell.example/users/4111",
+        own_seller_id="4111",
+    )
+
+    async with StarvellClient(settings, InMemoryFixedWindowRateLimiter(), client) as starvell:
+        lots = await starvell.get_my_lots()
+
+    assert len(lots) == 1
+    assert lots[0].lot_id == "1998"
+    assert lots[0].title == "200 робуксов"
+    assert lots[0].position_amount == 200
+    assert lots[0].stock == 16
+    assert lots[0].price == Decimal("220")
+    assert lots[0].seller_id == "4111"
+
+
+def test_parse_starvell_market_offers_from_category_html() -> None:
+    html = """
+    <script id="__NEXT_DATA__" type="application/json">
+    {
+      "props": {
+        "pageProps": {
+          "offers": [
+            {
+              "id": 213225,
+              "type": "LOT",
+              "price": "75.70000",
+              "availability": 120,
+              "subCategory": {"id": 65, "name": "80 робуксов"},
+              "user": {
+                "id": 70238,
+                "username": "psorias",
+                "rating": 5,
+                "reviewsCount": 448
+              }
+            },
+            {
+              "id": 1999,
+              "type": "LOT",
+              "price": "334.30000",
+              "availability": 7799,
+              "subCategory": {"id": 67, "name": "400 робуксов"},
+              "user": {
+                "id": 4111,
+                "username": "zoomplex",
+                "rating": 5
+              }
+            }
+          ]
+        }
+      }
+    }
+    </script>
+    """
+
+    offers = parse_starvell_market_offers(html, position_amount=80)
+
+    assert len(offers) == 1
+    assert offers[0].position_amount == 80
+    assert offers[0].price == Decimal("75.70000")
+    assert offers[0].seller_id == "70238"
+    assert offers[0].seller_username == "psorias"
+    assert offers[0].rating == Decimal("5")
+    assert offers[0].is_active is True
+
+
+def test_parse_starvell_market_offers_from_api_payload() -> None:
+    payload = [
+        {
+            "id": 153402,
+            "type": "LOT",
+            "price": "551.80000",
+            "availability": 50000,
+            "subCategory": {"id": 69, "name": "800 робуксов"},
+            "user": {"id": 132166, "username": "bob2minion", "rating": 5},
+        },
+        {
+            "id": 213225,
+            "type": "LOT",
+            "price": "73.90000",
+            "availability": 20,
+            "subCategory": {"id": 65, "name": "80 робуксов"},
+            "user": {"id": 70238, "username": "psorias", "rating": 5},
+        },
+    ]
+
+    offers = parse_starvell_market_offers_payload(payload, position_amount=800)
+
+    assert len(offers) == 1
+    assert offers[0].position_amount == 800
+    assert offers[0].price == Decimal("551.80000")
+    assert offers[0].seller_id == "132166"
+    assert offers[0].seller_username == "bob2minion"
+
+
+def test_parse_starvell_own_lot_from_offer_html() -> None:
+    html = """
+    <script id="__NEXT_DATA__" type="application/json">
+    {
+      "pageProps": {
+        "offer": {
+          "id": 1996,
+          "type": "LOT",
+          "price": "79.30000",
+          "availability": 2926,
+          "subCategory": {"id": 65, "name": "80 робуксов"},
+          "userId": 4111
+        },
+        "seller": {"id": 4111, "username": "zoomplex"}
+      }
+    }
+    </script>
+    """
+
+    lot = parse_starvell_own_lot(html, position_amount=80, lot_id="1996")
+
+    assert lot is not None
+    assert lot.position_amount == 80
+    assert lot.lot_id == "1996"
+    assert lot.price == Decimal("79.30000")
+
+
+@pytest.mark.asyncio
+async def test_get_market_offers_uses_read_only_api_category_endpoint() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url.path == "/api/offers/list-by-category"
+        payload = json.loads(request.content)
+        assert payload["categoryId"] == 40
+        assert payload["subCategoryId"] == 65
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "id": 213225,
+                    "price": "75.70000",
+                    "availability": 120,
+                    "subCategory": {"name": "80 робуксов"},
+                    "user": {"id": 70238, "username": "psorias", "rating": 5},
+                }
+            ],
+        )
+
+    client = httpx.AsyncClient(
+        base_url="https://starvell.example",
+        transport=httpx.MockTransport(handler),
+    )
+    settings = Settings(
+        _env_file=None,
+        market_base_url="https://starvell.example",
+        market_offers_api_url="/api/offers/list-by-category",
+    )
+
+    async with StarvellClient(settings, InMemoryFixedWindowRateLimiter(), client) as starvell:
+        result = await starvell.get_market_offers_result(80, "1996")
+
+    assert result.method == "POST"
+    assert result.url == "/api/offers/list-by-category"
+    assert result.raw_offer_count == 1
+    assert len(result.offers) == 1
+    assert result.offers[0].price == Decimal("75.70000")
+
+
+@pytest.mark.asyncio
+async def test_get_my_lot_uses_safe_get_offer_page() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url.path == "/offers/1996"
+        return httpx.Response(
+            200,
+            content="""
+            <script id="__NEXT_DATA__" type="application/json">
+            {
+              "props": {
+                "pageProps": {
+                  "offer": {
+                    "id": 1996,
+                    "price": "79.30000",
+                    "availability": 2926,
+                    "subCategory": {"name": "80 робуксов"}
+                  }
+                }
+              }
+            }
+            </script>
+            """.encode("utf-8"),
+            headers={"content-type": "text/html; charset=utf-8"},
+        )
+
+    client = httpx.AsyncClient(
+        base_url="https://starvell.example",
+        transport=httpx.MockTransport(handler),
+    )
+    settings = Settings(
+        _env_file=None,
+        market_base_url="https://starvell.example",
+    )
+
+    async with StarvellClient(settings, InMemoryFixedWindowRateLimiter(), client) as starvell:
+        lot = await starvell.get_my_lot(80, "1996")
+
+    assert lot is not None
+    assert lot.price == Decimal("79.30000")
 
 
 def test_explain_http_status_returns_human_russian_text() -> None:

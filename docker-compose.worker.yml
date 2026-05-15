@@ -1,0 +1,57 @@
+services:
+  postgres:
+    profiles:
+      - main-only
+
+  redis:
+    profiles:
+      - main-only
+
+  migrate:
+    profiles:
+      - main-only
+
+  seed:
+    profiles:
+      - main-only
+
+  bot:
+    profiles:
+      - main-only
+
+  worker:
+    profiles:
+      - legacy-worker
+
+  worker-fast-1:
+    build: .
+    env_file: .env
+    profiles:
+      - worker-vps
+    environment:
+      APP_MODE: worker
+      WORKER_GROUP: fast_1
+    command: python -m app.worker_main
+    depends_on: !reset []
+
+  worker-fast-2:
+    build: .
+    env_file: .env
+    profiles:
+      - worker-vps
+    environment:
+      APP_MODE: worker
+      WORKER_GROUP: fast_2
+    command: python -m app.worker_main
+    depends_on: !reset []
+
+  worker-slow:
+    build: .
+    env_file: .env
+    profiles:
+      - worker-vps
+    environment:
+      APP_MODE: worker
+      WORKER_GROUP: slow
+    command: python -m app.worker_main
+    depends_on: !reset []

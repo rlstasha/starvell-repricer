@@ -4,25 +4,33 @@ services:
   postgres:
     image: postgres:16-alpine
     environment:
-      POSTGRES_DB: repricer
-      POSTGRES_USER: repricer
-      POSTGRES_PASSWORD: repricer
-    ports:
-      - "5432:5432"
+      POSTGRES_DB: ${POSTGRES_DB:-repricer}
+      POSTGRES_USER: ${POSTGRES_USER:-repricer}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-repricer}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U repricer -d repricer"]
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
       interval: 5s
       timeout: 3s
       retries: 20
 
   redis:
     image: redis:7-alpine
-    ports:
-      - "6379:6379"
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+    command: >
+      sh -c 'if [ -n "$$REDIS_PASSWORD" ]; then
+        redis-server --requirepass "$$REDIS_PASSWORD";
+      else
+        redis-server;
+      fi'
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test:
+        [
+          "CMD-SHELL",
+          "if [ -n \"$${REDIS_PASSWORD}\" ]; then redis-cli -a \"$${REDIS_PASSWORD}\" ping | grep PONG; else redis-cli ping | grep PONG; fi",
+        ]
       interval: 5s
       timeout: 3s
       retries: 20
@@ -46,6 +54,47 @@ services:
   worker:
     build: .
     env_file: .env
+    profiles:
+      - legacy-worker
+    command: python -m app.worker_main
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  worker-fast-1:
+    build: .
+    env_file: .env
+    environment:
+      APP_MODE: worker
+      WORKER_GROUP: fast_1
+    command: python -m app.worker_main
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  worker-fast-2:
+    build: .
+    env_file: .env
+    environment:
+      APP_MODE: worker
+      WORKER_GROUP: fast_2
+    command: python -m app.worker_main
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  worker-slow:
+    build: .
+    env_file: .env
+    environment:
+      APP_MODE: worker
+      WORKER_GROUP: slow
     command: python -m app.worker_main
     depends_on:
       seed:
@@ -56,6 +105,8 @@ services:
   bot:
     build: .
     env_file: .env
+    environment:
+      APP_MODE: bot
     command: python -m app.bot_main
     depends_on:
       seed:

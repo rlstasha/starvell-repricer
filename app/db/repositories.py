@@ -17,6 +17,7 @@ from app.db.models import (
     PositionState,
     PriceUpdateLog,
     PriorityLevel,
+    WorkerHeartbeat,
     UpdateStatus,
     WorkerState,
 )
@@ -296,6 +297,19 @@ class PositionRepository:
         )
         return [(log, amount) for log, amount in result.all()]
 
+    async def list_latest_price_logs_by_position(self) -> list[tuple[Position, PriceUpdateLog | None]]:
+        positions = await self.list_positions()
+        items: list[tuple[Position, PriceUpdateLog | None]] = []
+        for position in positions:
+            log = await self.session.scalar(
+                select(PriceUpdateLog)
+                .where(PriceUpdateLog.position_id == position.id)
+                .order_by(PriceUpdateLog.created_at.desc())
+                .limit(1)
+            )
+            items.append((position, log))
+        return items
+
     async def list_recent_errors(self, *, limit: int = 5) -> list[PriceUpdateLog]:
         result = await self.session.scalars(
             select(PriceUpdateLog)
@@ -304,6 +318,18 @@ class PositionRepository:
             .limit(limit)
         )
         return list(result)
+
+    async def list_recent_errors_with_positions(
+        self, *, limit: int = 5
+    ) -> list[tuple[PriceUpdateLog, Position | None]]:
+        result = await self.session.execute(
+            select(PriceUpdateLog, Position)
+            .join(Position, Position.id == PriceUpdateLog.position_id, isouter=True)
+            .where(PriceUpdateLog.status == UpdateStatus.FAILED.value)
+            .order_by(PriceUpdateLog.created_at.desc())
+            .limit(limit)
+        )
+        return [(log, position) for log, position in result.all()]
 
     async def count_by_priority(self, *, enabled_only: bool = False) -> dict[str, int]:
         query = select(Position.priority, func.count()).group_by(Position.priority)
@@ -428,3 +454,67 @@ class WorkerStateRepository:
         state.last_position_amount = position_amount
         state.last_status = status
         state.last_error = error
+
+
+class WorkerHeartbeatRepository:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def upsert(
+        self,
+        *,
+        worker_group: str,
+        hostname: str | None,
+        public_ip: str | None,
+        assigned_positions: list[int],
+        request_limit_per_minute: int,
+        status: str,
+        errors_429: int,
+        errors_403: int,
+        errors_timeout: int,
+        consecutive_errors: int,
+        safe_mode: bool,
+        dry_run: bool,
+    ) -> None:
+        now = datetime.now(UTC)
+        heartbeat = await self.session.scalar(
+            select(WorkerHeartbeat).where(WorkerHeartbeat.worker_group == worker_group)
+        )
+        if heartbeat is None:
+            self.session.add(
+                WorkerHeartbeat(
+                    worker_group=worker_group,
+                    hostname=hostname,
+                    public_ip=public_ip,
+                    assigned_positions=assigned_positions,
+                    request_limit_per_minute=request_limit_per_minute,
+                    last_seen_at=now,
+                    status=status,
+                    errors_429=errors_429,
+                    errors_403=errors_403,
+                    errors_timeout=errors_timeout,
+                    consecutive_errors=consecutive_errors,
+                    safe_mode=safe_mode,
+                    dry_run=dry_run,
+                )
+            )
+            return
+
+        heartbeat.hostname = hostname
+        heartbeat.public_ip = public_ip
+        heartbeat.assigned_positions = assigned_positions
+        heartbeat.request_limit_per_minute = request_limit_per_minute
+        heartbeat.last_seen_at = now
+        heartbeat.status = status
+        heartbeat.errors_429 = errors_429
+        heartbeat.errors_403 = errors_403
+        heartbeat.errors_timeout = errors_timeout
+        heartbeat.consecutive_errors = consecutive_errors
+        heartbeat.safe_mode = safe_mode
+        heartbeat.dry_run = dry_run
+
+    async def list_all(self) -> list[WorkerHeartbeat]:
+        result = await self.session.scalars(
+            select(WorkerHeartbeat).order_by(WorkerHeartbeat.worker_group.asc())
+        )
+        return list(result)

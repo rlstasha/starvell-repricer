@@ -37,6 +37,13 @@ class CompetitorFilter:
         accepted.sort(key=lambda item: item.price)
         return FilterResult(accepted=accepted, ignored_reasons=ignored_reasons)
 
+    def ignore_reason(
+        self,
+        offer: MarketOffer,
+        settings: CompetitorFilterSettings,
+    ) -> str | None:
+        return self._ignore_reason(offer, settings)
+
     def _ignore_reason(
         self,
         offer: MarketOffer,
@@ -67,4 +74,3 @@ class CompetitorFilter:
         if settings.own_seller_username and offer.seller_username:
             return settings.own_seller_username.casefold() == offer.seller_username.casefold()
         return False
-

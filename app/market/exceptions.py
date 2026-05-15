@@ -2,8 +2,8 @@ class StarvellClientError(RuntimeError):
     """Base error for Starvell/Statvell client failures."""
 
 
-class StarvellNotImplementedError(StarvellClientError):
-    """Raised when real Starvell API integration has not been added yet."""
+class StarvellWriteDisabledError(StarvellClientError):
+    """Raised when a write operation is blocked by the safe client boundary."""
 
 
 class StarvellEndpointNotConfiguredError(StarvellClientError):

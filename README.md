@@ -12,11 +12,12 @@
 - Seed ID лотов для всех известных позиций. Для `40` робуксов ID пока не указан.
 - High priority для `400, 500, 800, 1000, 1200, 1700, 2000`.
 - Priority queue: `70%` лимита на high-позиции и `30%` на normal-позиции.
-- Rate limiter: не больше `100` запросов в минуту через Redis.
+- Rate limiter: отдельный лимит worker через Redis, по умолчанию `100` запросов в минуту на каждый worker.
 - Фильтр конкурентов: рейтинг, отсутствие рейтинга, свой продавец, неактивный продавец.
 - Стратегия `undercut_by_1`: цена конкурента минус `step`, с ограничениями `min_price` и `max_price`.
 - Fallback: `keep_current` или `set_max_price`.
 - Telegram-бот с owner-only доступом, inline-меню, карточками позиций, статусом, логами и переключателем dry-run.
+- Multi-server режим: `worker-fast-1`, `worker-fast-2`, `worker-slow` с отдельными группами позиций, Redis-lock и heartbeat.
 - Тесты pytest для ключевых сценариев.
 
 ## Важное про API сайта
@@ -27,26 +28,61 @@
 app/market/client.py
 ```
 
-Класс `StarvellClient` содержит методы-заглушки:
+Класс `StarvellClient` содержит безопасные GET-методы чтения данных и отдельный
+защитный метод записи цены, который сейчас намеренно блокирует любые изменения:
 
 ```python
 check_connection()
 get_market_offers(position_amount: int, lot_id: str | None)
 get_my_lot(position_amount: int, lot_id: str | None)
 get_my_lots()
-update_my_lot_price(position_amount: int, lot_id: str | None, new_price: Decimal)
 get_account_info()
+update_my_lot_price(position_amount: int, lot_id: str | None, new_price: Decimal)
 ```
 
-Реальные endpoint-ы сайта не угадываются. Для безопасной проверки подключения можно
-указать найденные через DevTools GET URL:
+Чтение своих данных работает через GET, а публичный рынок читается через
+read-only endpoint списка офферов:
+
+- `MARKET_ACCOUNT_INFO_URL` и `MARKET_MY_LOTS_URL` обычно указывают на профиль продавца;
+- `MARKET_OFFERS_API_URL` по умолчанию `/api/offers/list-by-category` и используется
+  для списка публичных предложений-конкурентов по `subCategoryId`;
+- `MARKET_OFFERS_URL` по умолчанию `/roblox/packages` оставлен как fallback HTML-страницы;
+- текущая цена своего лота читается со страницы `/offers/{lot_id}`.
+
+Для безопасной проверки подключения можно указать найденные через DevTools GET URL:
 
 ```env
 MARKET_ACCOUNT_INFO_URL=
 MARKET_MY_LOTS_URL=
+MARKET_OFFERS_URL=/roblox/packages
+MARKET_OFFERS_API_URL=/api/offers/list-by-category
+MARKET_OFFERS_LIMIT=100
 ```
 
-Когда будут точные endpoint-ы сайта, нужно заменить TODO внутри этого класса. Остальной проект менять не нужно.
+Реальное изменение цены на сайте пока не включено: `update_my_lot_price()`
+останавливается до любых POST/PATCH/PUT-запросов.
+
+Текущий источник конкурентов:
+
+```env
+MARKET_OFFERS_URL=/roblox/packages
+MARKET_OFFERS_API_URL=/api/offers/list-by-category
+```
+
+HTML-страница `/roblox/packages` отдает только серверный срез публичных офферов.
+Для полного списка по номиналам репрайсер использует read-only запрос
+`/api/offers/list-by-category` с `categoryId=40` и нужным `subCategoryId`.
+Цены этот запрос не меняет.
+
+Диагностика конкурентов:
+
+```bash
+python -m app.diagnose_competitors
+```
+
+Команда показывает по каждой позиции: `lot_id`, URL, количество офферов до и
+после фильтра, причины отбраковки и лучшего найденного конкурента. Cookie,
+session и token не выводятся.
 
 ## Проверка подключения Starvell
 
@@ -90,6 +126,9 @@ OWN_SELLER_USERNAME=...
 MARKET_SESSION_COOKIE=...
 MARKET_ACCOUNT_INFO_URL=...
 MARKET_MY_LOTS_URL=...
+MARKET_OFFERS_URL=/roblox/packages
+MARKET_OFFERS_API_URL=/api/offers/list-by-category
+MARKET_OFFERS_LIMIT=100
 ```
 
 Секреты не коммитить. Файл `.env` находится в `.gitignore`.
@@ -119,8 +158,10 @@ DRY_RUN=false
 
 ## Запуск через Docker
 
+Один сервер, все сервисы локально:
+
 ```bash
-docker compose up --build
+docker compose up -d --build
 ```
 
 Отдельно миграции:
@@ -138,13 +179,74 @@ docker compose run --rm seed
 Worker:
 
 ```bash
-docker compose up worker
+docker compose up worker-fast-1 worker-fast-2 worker-slow
 ```
 
 Telegram-бот:
 
 ```bash
 docker compose up bot
+```
+
+## Multi-server режим
+
+Подробная инструкция для 3 VPS находится в [MULTI_SERVER_DEPLOY.md](/Users/user/starvell-repricer/MULTI_SERVER_DEPLOY.md).
+
+Текущая схема:
+
+```text
+MAIN SERVER: Telegram bot, PostgreSQL, Redis
+VPS #1: worker-fast-1 -> 500, 800, 1000
+VPS #2: worker-fast-2 -> 400, 1200, 1700, 2000
+VPS #3: worker-slow -> 40, 80, 200, 2100, 2500, 3600, 4500, 10000, 22500
+```
+
+Основные env-переменные:
+
+```env
+GLOBAL_REQUEST_LIMIT_PER_MINUTE=300
+WORKER_FAST_1_REQUEST_LIMIT_PER_MINUTE=100
+WORKER_FAST_2_REQUEST_LIMIT_PER_MINUTE=100
+WORKER_SLOW_REQUEST_LIMIT_PER_MINUTE=100
+WORKER_FAST_1_POSITIONS=500,800,1000
+WORKER_FAST_2_POSITIONS=400,1200,1700,2000
+WORKER_SLOW_POSITIONS=40,80,200,2100,2500,3600,4500,10000,22500
+POSITION_LOCK_TTL_SECONDS=30
+```
+
+Main server:
+
+```bash
+cp .env.main.example .env
+docker compose -f docker-compose.yml -f docker-compose.main.yml up -d --build
+```
+
+Worker fast 1:
+
+```bash
+cp .env.worker-fast-1.example .env
+docker compose -f docker-compose.yml -f docker-compose.worker.yml up -d --build worker-fast-1
+```
+
+Worker fast 2:
+
+```bash
+cp .env.worker-fast-2.example .env
+docker compose -f docker-compose.yml -f docker-compose.worker.yml up -d --build worker-fast-2
+```
+
+Worker slow:
+
+```bash
+cp .env.worker-slow.example .env
+docker compose -f docker-compose.yml -f docker-compose.worker.yml up -d --build worker-slow
+```
+
+Проверки:
+
+```bash
+python -m app.check_worker_limits
+python -m app.check_worker_ip
 ```
 
 ## Локальный запуск
@@ -180,6 +282,7 @@ docker compose up bot
 - `📦 Позиции`
 - `⚙️ Общие настройки`
 - `📊 Статус`
+- `📊 Серверы и лимиты`
 - `🧪 Dry-run включить/выключить`
 - `📝 Логи последних действий`
 
@@ -255,8 +358,7 @@ NORMAL_PRIORITY_PERCENT=30
 ```
 
 В статусе бот показывает, сколько запросов в минуту идет на high и normal, сколько
-включенных позиций каждого типа и примерную частоту проверки. Расчет исходит из того,
-что одна проверка позиции занимает примерно два запроса к Starvell.
+включенных позиций каждого типа и примерную частоту проверки.
 
 ### Как проверить защиту
 
@@ -282,6 +384,8 @@ docker compose run --rm worker pytest -q
 app/market/client.py              # единственный слой Starvell/Statvell API
 app/repricer/engine.py            # обработка одной позиции
 app/repricer/scheduler.py         # бесконечный worker loop
+app/repricer/worker_groups.py     # группы fast_1, fast_2, slow
+app/repricer/locks.py             # Redis lock/lease позиций
 app/repricer/rate_limiter.py      # Redis/in-memory rate limiter
 app/repricer/price_strategy.py    # расчет целевой цены
 app/repricer/competitor_filter.py # фильтр конкурентов

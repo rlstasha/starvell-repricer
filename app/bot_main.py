@@ -19,6 +19,8 @@ logger = get_logger(__name__)
 async def main() -> None:
     settings = get_settings()
     configure_logging(settings.log_level)
+    if settings.app_mode not in {"all", "bot"}:
+        raise RuntimeError("APP_MODE must be bot or all to start bot")
 
     if not settings.telegram_bot_token:
         raise RuntimeError("TELEGRAM_BOT_TOKEN is required to start bot")
@@ -26,18 +28,19 @@ async def main() -> None:
         raise RuntimeError("OWNER_TELEGRAM_IDS or OWNER_TELEGRAM_ID is required to start bot")
 
     session_factory = create_session_factory(settings=settings)
-    async with session_factory() as session:
-        repository = PositionRepository(session)
-        await repository.seed_default_positions(
-            min_price=settings.default_min_price,
-            max_price=settings.default_max_price,
-            step=settings.default_price_step,
-            min_rating=settings.default_min_rating,
-            ignore_no_rating=settings.default_ignore_no_rating,
-            fallback_behavior=settings.default_fallback_behavior,
-        )
-        await AppSettingsRepository(session).ensure_defaults(dry_run=settings.dry_run)
-        await session.commit()
+    if settings.app_mode == "all":
+        async with session_factory() as session:
+            repository = PositionRepository(session)
+            await repository.seed_default_positions(
+                min_price=settings.default_min_price,
+                max_price=settings.default_max_price,
+                step=settings.default_price_step,
+                min_rating=settings.default_min_rating,
+                ignore_no_rating=settings.default_ignore_no_rating,
+                fallback_behavior=settings.default_fallback_behavior,
+            )
+            await AppSettingsRepository(session).ensure_defaults(dry_run=settings.dry_run)
+            await session.commit()
 
     bot = Bot(settings.telegram_bot_token)
     dispatcher = Dispatcher(storage=MemoryStorage())

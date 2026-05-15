@@ -10,6 +10,7 @@ def main_menu_keyboard(*, dry_run: bool) -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="📦 Позиции", callback_data="positions:list")],
             [InlineKeyboardButton(text="⚙️ Общие настройки", callback_data="settings:general")],
             [InlineKeyboardButton(text="📊 Статус", callback_data="status:show")],
+            [InlineKeyboardButton(text="📊 Серверы и лимиты", callback_data="servers:limits")],
             [InlineKeyboardButton(text=dry_run_text, callback_data="settings:toggle_dry_run")],
             [InlineKeyboardButton(text="📝 Логи последних действий", callback_data="logs:recent")],
         ]
@@ -27,10 +28,11 @@ def positions_keyboard(positions: list[Position]) -> InlineKeyboardMarkup:
     for position in positions:
         marker = "🟢" if position.enabled else "🔴"
         priority = "высокий" if position.priority == "high" else "обычный"
+        lot_id = position.lot_id or "ID не указан"
         rows.append(
             [
                 InlineKeyboardButton(
-                    text=f"{marker} {position.robux_amount} робуксов · {priority}",
+                    text=f"{marker} {position.robux_amount} робуксов · {lot_id} · {priority}",
                     callback_data=f"position:{position.robux_amount}",
                 )
             ]

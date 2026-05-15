@@ -19,7 +19,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
 class Base(DeclarativeBase):
-    pass
+    """Base declarative model class."""
 
 
 class PriorityLevel(StrEnum):
@@ -176,6 +176,32 @@ class WorkerState(Base):
     last_position_amount: Mapped[int | None] = mapped_column(Integer)
     last_status: Mapped[str | None] = mapped_column(String(32))
     last_error: Mapped[str | None] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+        nullable=False,
+    )
+
+
+class WorkerHeartbeat(Base):
+    __tablename__ = "worker_heartbeats"
+    __table_args__ = (UniqueConstraint("worker_group", name="uq_worker_heartbeats_group"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    worker_group: Mapped[str] = mapped_column(String(32), nullable=False)
+    hostname: Mapped[str | None] = mapped_column(String(255))
+    public_ip: Mapped[str | None] = mapped_column(String(64))
+    assigned_positions: Mapped[list[int]] = mapped_column(JSON, default=list, nullable=False)
+    request_limit_per_minute: Mapped[int] = mapped_column(Integer, nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    errors_429: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    errors_403: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    errors_timeout: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    consecutive_errors: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    safe_mode: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    dry_run: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(UTC),
