@@ -27,12 +27,11 @@ def positions_keyboard(positions: list[Position]) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     for position in positions:
         marker = "🟢" if position.enabled else "🔴"
-        priority = "высокий" if position.priority == "high" else "обычный"
         lot_id = position.lot_id or "ID не указан"
         rows.append(
             [
                 InlineKeyboardButton(
-                    text=f"{marker} {position.robux_amount} робуксов · {lot_id} · {priority}",
+                    text=f"{marker} {position.robux_amount} робуксов · {lot_id}",
                     callback_data=f"position:{position.robux_amount}",
                 )
             ]
@@ -62,7 +61,6 @@ def position_card_keyboard(position: Position) -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(text="🔗 ID лота", callback_data=f"position:edit:lot_id:{amount}"),
-                InlineKeyboardButton(text="⚡ Приоритет", callback_data=f"position:toggle_priority:{amount}"),
             ],
             [InlineKeyboardButton(text=ignore_text, callback_data=f"position:toggle_ignore:{amount}")],
             [InlineKeyboardButton(text="📊 Конкуренты", callback_data=f"position:competitors:{amount}")],

@@ -8,7 +8,7 @@ from app.core.config import Settings
 from app.core.logging import get_logger
 from app.db.models import Position, UpdateStatus
 from app.db.repositories import PositionRepository
-from app.market.client import StarvellClient
+from app.market.client import StarvellClient, safe_starvell_error_reason
 from app.market.schemas import MarketOffer, OwnLot
 from app.repricer.competitor_filter import CompetitorFilter, CompetitorFilterSettings
 from app.repricer.price_strategy import PriceCalculationSettings, PriceDecision, UndercutByStepStrategy
@@ -55,7 +55,7 @@ class RepricerEngine:
             return result
         except Exception as exc:
             await self.session.rollback()
-            reason = str(exc).strip() or type(exc).__name__
+            reason = safe_starvell_error_reason(exc)
             await self._persist_failure(position_amount, exc, reason)
             self.logger.exception(
                 "repricer_position_failed",

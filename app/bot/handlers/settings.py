@@ -1,4 +1,5 @@
 from aiogram import Router
+from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import async_sessionmaker
@@ -12,6 +13,7 @@ from app.bot.formatters import (
     format_status,
 )
 from app.bot.keyboards import back_to_main_keyboard, general_settings_keyboard, main_menu_keyboard
+from app.bot.ui import answer_loading, cleanup_pending_prompt, safe_edit_text
 from app.core.config import Settings
 from app.db.models import UpdateStatus
 from app.db.repositories import (
@@ -30,10 +32,14 @@ async def general_settings(
     callback: CallbackQuery,
     session_factory: async_sessionmaker[AsyncSession],
     settings: Settings,
+    state: FSMContext,
 ) -> None:
+    await cleanup_pending_prompt(state, callback.bot, clear_state=True)
+    await answer_loading(callback)
     async with session_factory() as session:
         dry_run = await AppSettingsRepository(session).get_bool("dry_run", settings.dry_run)
-    await callback.message.edit_text(
+    await safe_edit_text(
+        callback,
         format_general_settings(
             dry_run=dry_run,
             request_limit=settings.request_limit_per_minute,
@@ -45,7 +51,6 @@ async def general_settings(
         ),
         reply_markup=general_settings_keyboard(dry_run=dry_run),
     )
-    await callback.answer()
 
 
 @router.callback_query(lambda query: query.data == "settings:toggle_dry_run")
@@ -53,7 +58,9 @@ async def toggle_dry_run(
     callback: CallbackQuery,
     session_factory: async_sessionmaker[AsyncSession],
     settings: Settings,
+    state: FSMContext,
 ) -> None:
+    await cleanup_pending_prompt(state, callback.bot, clear_state=True)
     async with session_factory() as session:
         repo = AppSettingsRepository(session)
         current = await repo.get_bool("dry_run", settings.dry_run)
@@ -62,7 +69,8 @@ async def toggle_dry_run(
         new_value = not current
 
     text = "Dry-run включен." if new_value else "Dry-run выключен."
-    await callback.message.edit_text(
+    await safe_edit_text(
+        callback,
         text,
         reply_markup=main_menu_keyboard(dry_run=new_value),
     )
@@ -75,7 +83,10 @@ async def show_status(
     session_factory: async_sessionmaker[AsyncSession],
     settings: Settings,
     redis: Redis,
+    state: FSMContext,
 ) -> None:
+    await cleanup_pending_prompt(state, callback.bot, clear_state=True)
+    await answer_loading(callback)
     limiter = RedisFixedWindowRateLimiter(
         redis,
         limit=(
@@ -144,11 +155,11 @@ async def show_status(
             last_position=last_position,
         )
 
-    await callback.message.edit_text(
+    await safe_edit_text(
+        callback,
         text,
         reply_markup=back_to_main_keyboard(),
     )
-    await callback.answer()
 
 
 @router.callback_query(lambda query: query.data in {"proxies:limits", "servers:limits"})
@@ -156,13 +167,17 @@ async def show_proxy_profiles(
     callback: CallbackQuery,
     session_factory: async_sessionmaker[AsyncSession],
     settings: Settings,
+    state: FSMContext,
 ) -> None:
+    await cleanup_pending_prompt(state, callback.bot, clear_state=True)
+    await answer_loading(callback)
     async with session_factory() as session:
         app_settings = AppSettingsRepository(session)
         dry_run = await app_settings.get_bool("dry_run", settings.dry_run)
         heartbeats = await WorkerHeartbeatRepository(session).list_all()
 
-    await callback.message.edit_text(
+    await safe_edit_text(
+        callback,
         format_proxy_profiles(
             group_infos=settings.worker_group_infos,
             heartbeats=heartbeats,
@@ -172,7 +187,6 @@ async def show_proxy_profiles(
         ),
         reply_markup=back_to_main_keyboard(),
     )
-    await callback.answer()
 
 
 @router.callback_query(lambda query: query.data == "logs:recent")
@@ -180,13 +194,17 @@ async def show_recent_logs(
     callback: CallbackQuery,
     session_factory: async_sessionmaker[AsyncSession],
     settings: Settings,
+    state: FSMContext,
 ) -> None:
+    await cleanup_pending_prompt(state, callback.bot, clear_state=True)
+    await answer_loading(callback)
     async with session_factory() as session:
         repo = PositionRepository(session)
         logs = await repo.list_latest_price_logs_by_position()
         heartbeats = await WorkerHeartbeatRepository(session).list_all()
 
-    await callback.message.edit_text(
+    await safe_edit_text(
+        callback,
         format_logs(
             logs,
             proxy_mode=settings.proxy_mode,
@@ -195,4 +213,3 @@ async def show_recent_logs(
         ),
         reply_markup=back_to_main_keyboard(),
     )
-    await callback.answer()

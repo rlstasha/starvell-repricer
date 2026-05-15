@@ -9,6 +9,12 @@ from sqlalchemy.ext.asyncio.session import AsyncSession
 
 from app.bot.formatters import format_competitors, format_position_card, format_price_test
 from app.bot.keyboards import position_card_keyboard, positions_keyboard
+from app.bot.ui import (
+    answer_loading,
+    cleanup_pending_prompt,
+    safe_edit_text,
+    send_tracked_prompt,
+)
 from app.core.config import Settings
 from app.db.models import Position
 from app.db.repositories import PositionRepository, WorkerHeartbeatRepository
@@ -35,11 +41,13 @@ class EditPositionState(StatesGroup):
 async def list_positions(
     callback: CallbackQuery,
     session_factory: async_sessionmaker[AsyncSession],
+    state: FSMContext,
 ) -> None:
+    await cleanup_pending_prompt(state, callback.bot, clear_state=True)
+    await answer_loading(callback)
     async with session_factory() as session:
         positions = await PositionRepository(session).list_positions()
-    await callback.message.edit_text("📦 Позиции", reply_markup=positions_keyboard(positions))
-    await callback.answer()
+    await safe_edit_text(callback, "📦 Позиции", reply_markup=positions_keyboard(positions))
 
 
 @router.callback_query(F.data.startswith("position:"))
@@ -50,8 +58,10 @@ async def position_actions(
     state: FSMContext,
 ) -> None:
     parts = callback.data.split(":")
+    await cleanup_pending_prompt(state, callback.bot, clear_state=True)
 
     if len(parts) == 2:
+        await answer_loading(callback)
         await _show_card(callback, session_factory, settings, int(parts[1]))
         return
 
@@ -59,6 +69,7 @@ async def position_actions(
     amount = int(parts[-1])
 
     if action == "toggle":
+        await answer_loading(callback)
         async with session_factory() as session:
             repo = PositionRepository(session)
             position = await repo.get_by_amount(amount)
@@ -68,14 +79,8 @@ async def position_actions(
         await _show_card(callback, session_factory, settings, amount)
         return
 
-    if action == "toggle_priority":
-        async with session_factory() as session:
-            await PositionRepository(session).toggle_priority(amount)
-            await session.commit()
-        await _show_card(callback, session_factory, settings, amount)
-        return
-
     if action == "toggle_ignore":
+        await answer_loading(callback)
         async with session_factory() as session:
             repo = PositionRepository(session)
             position = await repo.get_by_amount(amount)
@@ -86,10 +91,12 @@ async def position_actions(
         return
 
     if action == "competitors":
+        await answer_loading(callback)
         await _show_competitors(callback, session_factory, settings, amount)
         return
 
     if action == "test_calc":
+        await answer_loading(callback)
         await _show_price_test(callback, session_factory, settings, amount)
         return
 
@@ -101,10 +108,18 @@ async def position_actions(
         await state.set_state(EditPositionState.waiting_for_value)
         await state.update_data(amount=amount, field_name=field_name)
         if field_name == "lot_id":
-            await callback.message.answer("Введите ID лота. Чтобы очистить, отправьте: -")
+            await send_tracked_prompt(
+                callback.message,
+                state,
+                "Введите ID лота. Чтобы очистить, отправьте: -",
+            )
         else:
-            await callback.message.answer(f"Введите новую {EDIT_LABELS[field_name]}.")
-        await callback.answer()
+            await send_tracked_prompt(
+                callback.message,
+                state,
+                f"Введите новую {EDIT_LABELS[field_name]}.",
+            )
+        await callback.answer("Жду значение")
         return
 
     await callback.answer("Неизвестное действие.", show_alert=True)
@@ -125,6 +140,7 @@ async def save_position_value(
         repo = PositionRepository(session)
         position = await repo.get_by_amount(amount)
         if position is None:
+            await cleanup_pending_prompt(state, message.bot)
             await state.clear()
             await message.answer("Позиция не найдена.")
             return
@@ -154,6 +170,7 @@ async def save_position_value(
         counts = await repo.count_by_priority(enabled_only=True)
         heartbeats = await WorkerHeartbeatRepository(session).list_all()
 
+    await cleanup_pending_prompt(state, message.bot)
     await state.clear()
     await message.answer(
         "Настройка сохранена.\n\n"
@@ -174,13 +191,17 @@ async def _show_card(
         counts = await repo.count_by_priority(enabled_only=True)
         heartbeats = await WorkerHeartbeatRepository(session).list_all()
     if position is None:
-        await callback.answer("Позиция не найдена.", show_alert=True)
+        await safe_edit_text(
+            callback,
+            "⚠️ Позиция не найдена.",
+            reply_markup=positions_keyboard([]),
+        )
         return
-    await callback.message.edit_text(
+    await safe_edit_text(
+        callback,
         _format_position_card(position, settings, counts, heartbeats),
         reply_markup=position_card_keyboard(position),
     )
-    await callback.answer()
 
 
 async def _show_competitors(
@@ -195,9 +216,14 @@ async def _show_competitors(
         competitors = await repo.list_recent_competitors(position) if position else []
         heartbeats = await WorkerHeartbeatRepository(session).list_all()
     if position is None:
-        await callback.answer("Позиция не найдена.", show_alert=True)
+        await safe_edit_text(
+            callback,
+            "⚠️ Позиция не найдена.",
+            reply_markup=positions_keyboard([]),
+        )
         return
-    await callback.message.edit_text(
+    await safe_edit_text(
+        callback,
         format_competitors(
             position,
             competitors,
@@ -207,7 +233,6 @@ async def _show_competitors(
         ),
         reply_markup=position_card_keyboard(position),
     )
-    await callback.answer()
 
 
 async def _show_price_test(
@@ -223,7 +248,11 @@ async def _show_price_test(
         heartbeats = await WorkerHeartbeatRepository(session).list_all()
 
     if position is None:
-        await callback.answer("Позиция не найдена.", show_alert=True)
+        await safe_edit_text(
+            callback,
+            "⚠️ Позиция не найдена.",
+            reply_markup=positions_keyboard([]),
+        )
         return
 
     offers = [
@@ -248,7 +277,8 @@ async def _show_price_test(
             fallback_behavior=position.settings.fallback_behavior,
         ),
     )
-    await callback.message.edit_text(
+    await safe_edit_text(
+        callback,
         format_price_test(
             position=position,
             target_price=decision.target_price,
@@ -261,7 +291,6 @@ async def _show_price_test(
         ),
         reply_markup=position_card_keyboard(position),
     )
-    await callback.answer()
 
 
 def _validate_numeric_setting(position: Position, field_name: str, value: Decimal) -> str | None:

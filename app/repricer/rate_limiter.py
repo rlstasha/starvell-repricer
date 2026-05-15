@@ -7,6 +7,16 @@ from typing import Protocol
 from redis.asyncio import Redis
 
 
+ADAPTIVE_BACKOFF_SECONDS = (1.0, 2.0, 4.0, 8.0, 15.0)
+
+
+def adaptive_backoff_seconds(consecutive_errors: int) -> float:
+    if consecutive_errors <= 0:
+        return 0.0
+    index = min(consecutive_errors, len(ADAPTIVE_BACKOFF_SECONDS)) - 1
+    return ADAPTIVE_BACKOFF_SECONDS[index]
+
+
 class RateLimiter(Protocol):
     async def acquire(self, cost: int = 1) -> None:
         ...
@@ -87,6 +97,7 @@ class CompositeRateLimiter:
         self.backoff_factor = backoff_factor
         self.sleeper = sleeper
         self._extra_delay_ms = 0.0
+        self._consecutive_errors = 0
 
     async def try_acquire(self, cost: int = 1) -> bool:
         if self.burst_limiter and not await self.burst_limiter.try_acquire(cost):
@@ -105,17 +116,15 @@ class CompositeRateLimiter:
     async def current_usage(self) -> int:
         return await self.profile_limiter.current_usage()
 
-    def apply_backoff(self) -> None:
-        base_delay = max(self.min_delay_ms, 1)
-        next_delay = (
-            self._extra_delay_ms * self.backoff_factor
-            if self._extra_delay_ms
-            else base_delay
-        )
-        self._extra_delay_ms = min(next_delay, self.max_delay_ms)
+    def apply_backoff(self, error_kind: str | None = None) -> float:
+        self._consecutive_errors += 1
+        adaptive_delay_ms = adaptive_backoff_seconds(self._consecutive_errors) * 1000
+        self._extra_delay_ms = adaptive_delay_ms
+        return self._extra_delay_ms / 1000
 
     def reset_backoff(self) -> None:
         self._extra_delay_ms = 0.0
+        self._consecutive_errors = 0
 
     async def _sleep_after_request(self) -> None:
         delay_ms = self.min_delay_ms + self._extra_delay_ms

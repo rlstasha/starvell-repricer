@@ -50,7 +50,10 @@ REASON_LABELS = {
     "error": "Произошла ошибка.",
     "missing_lot_id": "Не найден ID лота.",
     "unauthorized": "Ошибка авторизации Starvell.",
+    "forbidden": "Доступ временно запрещен.",
+    "timeout": "Сайт слишком долго отвечает.",
     "rate_limited": "Сайт ограничил частоту запросов.",
+    "starvell_server_error": "Ошибка на стороне Starvell.",
     "position_disabled": "Позиция выключена.",
     "position_not_found": "Позиция не найдена.",
 }
@@ -72,6 +75,8 @@ CHECK_HINTS = {
     ),
     "missing_lot_id": "указать ID лота в карточке позиции",
     "unauthorized": "MARKET_SESSION_COOKIE и права аккаунта Starvell",
+    "forbidden": "доступ аккаунта Starvell и паузу перед следующей проверкой",
+    "timeout": "прокси, сеть и доступность Starvell",
     "rate_limited": "лимит запросов и паузу между проверками",
 }
 MISSING_REASON_TEXT = "Причина не записана. Нужно проверить лог worker."
@@ -99,10 +104,6 @@ def yes_no(value: bool | None) -> str:
     if value is None:
         return "—"
     return "да" if value else "нет"
-
-
-def priority_label(value: str) -> str:
-    return "высокий" if value == PriorityLevel.HIGH.value else "обычный"
 
 
 def format_priority_frequency(
@@ -210,9 +211,7 @@ def format_position_card(
         lines.extend(
             [
                 "",
-                "⚡ Приоритет",
-                f"• Уровень: {priority_label(position.priority)}",
-                f"• Частота проверки: {frequency}",
+                f"⏱ Частота проверки: {frequency}",
             ]
         )
 
@@ -562,6 +561,14 @@ def format_proxy_status(
                 f"• Статус: {_server_status(heartbeat, is_active)}",
             ]
         )
+        if _is_safe_mode_heartbeat(heartbeat):
+            lines.extend(
+                [
+                    f"• Причина: {_safe_mode_reason(heartbeat)}",
+                    f"• Запросов: {request_usage}/{global_limit}",
+                    f"• Следующая попытка: {_safe_mode_retry_text(heartbeat)}",
+                ]
+            )
         if heartbeat and not is_active:
             lines.append(f"• Последний сигнал: {dt(heartbeat.last_seen_at)}")
         lines.append("")
@@ -748,6 +755,15 @@ def _reason_key(reason: str | None) -> str:
         return ""
     if reason.startswith("dry_run_would_update:"):
         return "dry_run"
+    normalized = reason.lower()
+    if "429" in normalized or "too many requests" in normalized:
+        return "rate_limited"
+    if "403" in normalized:
+        return "forbidden"
+    if "401" in normalized:
+        return "unauthorized"
+    if "timeout" in normalized or "таймаут" in normalized:
+        return "timeout"
     return reason
 
 
@@ -841,9 +857,42 @@ def _server_frequency(request_limit: int, position_count: int) -> str:
 def _server_status(heartbeat: WorkerHeartbeat | None, is_active: bool) -> str:
     if heartbeat is None:
         return "⚪ нет сигнала"
-    if heartbeat.safe_mode:
-        return "🟡 safe mode"
+    if _is_safe_mode_heartbeat(heartbeat):
+        return "🟡 Safe mode активен"
     return "✅ активен" if is_active else "⚠️ не отвечает"
+
+
+def _is_safe_mode_heartbeat(heartbeat: WorkerHeartbeat | None) -> bool:
+    return bool(heartbeat and (heartbeat.safe_mode or heartbeat.status.startswith("safe_mode")))
+
+
+def _safe_mode_reason(heartbeat: WorkerHeartbeat | None) -> str:
+    status = heartbeat.status if heartbeat else ""
+    if "429" in status or (heartbeat and heartbeat.errors_429 > 0):
+        return "Starvell временно ограничил частоту запросов"
+    if "403" in status or (heartbeat and heartbeat.errors_403 > 0):
+        return "доступ временно запрещен"
+    if "timeout" in status or (heartbeat and heartbeat.errors_timeout > 0):
+        return "сайт слишком долго отвечает"
+    return "временная защита от частых запросов"
+
+
+def _safe_mode_retry_text(heartbeat: WorkerHeartbeat | None) -> str:
+    if heartbeat is None:
+        return "нет данных"
+    delay = _adaptive_retry_seconds(heartbeat.consecutive_errors)
+    elapsed = (datetime.now(UTC) - heartbeat.last_seen_at).total_seconds()
+    remaining = max(delay - elapsed, 0.0)
+    if remaining <= 0.1:
+        return "сейчас"
+    return f"через {_duration(remaining)}"
+
+
+def _adaptive_retry_seconds(consecutive_errors: int) -> float:
+    if consecutive_errors <= 0:
+        return 0.0
+    steps = (1.0, 2.0, 4.0, 8.0, 15.0)
+    return steps[min(consecutive_errors, len(steps)) - 1]
 
 
 def _use_proxy_ui(proxy_mode: str) -> bool:

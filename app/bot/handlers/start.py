@@ -1,11 +1,13 @@
 from aiogram import Router
 from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlalchemy.ext.asyncio.session import AsyncSession
 
 from app.bot.formatters import format_main_menu
 from app.bot.keyboards import main_menu_keyboard
+from app.bot.ui import cleanup_pending_prompt, safe_edit_text
 from app.core.config import Settings
 from app.db.repositories import AppSettingsRepository
 
@@ -17,7 +19,9 @@ async def start(
     message: Message,
     session_factory: async_sessionmaker[AsyncSession],
     settings: Settings,
+    state: FSMContext,
 ) -> None:
+    await cleanup_pending_prompt(state, message.bot, clear_state=True)
     dry_run = await _get_dry_run(session_factory, settings)
     await message.answer(format_main_menu(dry_run=dry_run), reply_markup=main_menu_keyboard(dry_run=dry_run))
 
@@ -32,9 +36,12 @@ async def main_menu(
     callback: CallbackQuery,
     session_factory: async_sessionmaker[AsyncSession],
     settings: Settings,
+    state: FSMContext,
 ) -> None:
+    await cleanup_pending_prompt(state, callback.bot, clear_state=True)
     dry_run = await _get_dry_run(session_factory, settings)
-    await callback.message.edit_text(
+    await safe_edit_text(
+        callback,
         format_main_menu(dry_run=dry_run),
         reply_markup=main_menu_keyboard(dry_run=dry_run),
     )
@@ -47,4 +54,3 @@ async def _get_dry_run(
 ) -> bool:
     async with session_factory() as session:
         return await AppSettingsRepository(session).get_bool("dry_run", settings.dry_run)
-

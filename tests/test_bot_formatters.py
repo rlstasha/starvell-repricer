@@ -238,6 +238,42 @@ def test_proxy_status_does_not_show_high_normal_budget() -> None:
     assert "Normal:" not in text
 
 
+def test_proxy_status_explains_safe_mode_without_technical_links() -> None:
+    settings = Settings(_env_file=None)
+    heartbeat = WorkerHeartbeat(
+        worker_group="fast_1",
+        hostname="server",
+        public_ip="45.132.20.115",
+        assigned_positions=[500, 800, 1000],
+        request_limit_per_minute=100,
+        last_seen_at=datetime.now(UTC),
+        status="safe_mode_429",
+        errors_429=4,
+        consecutive_errors=4,
+        safe_mode=True,
+        dry_run=True,
+    )
+
+    text = format_proxy_status(
+        worker_states=[],
+        heartbeats=[heartbeat],
+        dry_run=True,
+        request_usage=38,
+        global_limit=settings.global_request_limit_per_minute,
+        group_infos=settings.worker_group_infos,
+        success_count=0,
+        error_count=4,
+        recent_errors=[],
+        last_positions_by_amount={},
+    )
+
+    assert "🟡 Safe mode активен" in text
+    assert "Причина: Starvell временно ограничил частоту запросов" in text
+    assert "Запросов: 38/300" in text
+    assert "Следующая попытка: через" in text
+    assert "developer.mozilla.org" not in text
+
+
 def test_logs_show_proxy_group_and_missing_reason_text() -> None:
     settings = Settings(_env_file=None)
     position = _position(1200, "2004")
@@ -261,3 +297,22 @@ def test_logs_show_proxy_group_and_missing_reason_text() -> None:
     assert "🌐 Группа: Fast 2" in text
     assert "Причина: Причина не записана. Нужно проверить лог worker." in text
     assert "—" not in text
+
+
+def test_logs_hide_technical_http_links_from_old_errors() -> None:
+    position = _position(500, "2000")
+    log = PriceUpdateLog(
+        position_id=1,
+        status=UpdateStatus.FAILED.value,
+        reason=(
+            "Client error '429 Too Many Requests' for url "
+            "'https://starvell.com/api/offers/list-by-category'. "
+            "For more information check: https://developer.mozilla.org/"
+        ),
+        created_at=datetime(2026, 5, 15, 19, 10, tzinfo=UTC),
+    )
+
+    text = format_logs([(position, log)])
+
+    assert "Причина: Сайт ограничил частоту запросов." in text
+    assert "developer.mozilla.org" not in text

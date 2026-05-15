@@ -179,7 +179,7 @@ class StarvellClient:
                 response = await self._http_client.request(method, url, **kwargs)
             except httpx.TimeoutException:
                 if hasattr(self.rate_limiter, "apply_backoff"):
-                    self.rate_limiter.apply_backoff()
+                    self.rate_limiter.apply_backoff("timeout")
                 self.logger.warning(
                     "starvell_http_timeout",
                     method=method,
@@ -194,8 +194,10 @@ class StarvellClient:
                     continue
                 raise
 
-            if response.status_code == 429 and hasattr(self.rate_limiter, "apply_backoff"):
-                self.rate_limiter.apply_backoff()
+            if response.status_code < 400 and hasattr(self.rate_limiter, "reset_backoff"):
+                self.rate_limiter.reset_backoff()
+            elif response.status_code in {403, 429} and hasattr(self.rate_limiter, "apply_backoff"):
+                self.rate_limiter.apply_backoff(_error_kind_from_status(response.status_code))
             self.logger.info(
                 "starvell_http_request",
                 method=method,
@@ -484,6 +486,36 @@ def explain_http_status(status_code: int) -> str:
             "Попробуйте позже."
         )
     return f"{status_code}: Starvell вернул неожиданный HTTP-статус."
+
+
+def safe_starvell_error_reason(exc: Exception) -> str:
+    if isinstance(exc, httpx.HTTPStatusError):
+        status_code = exc.response.status_code
+        if status_code == 401:
+            return "unauthorized"
+        if status_code == 403:
+            return "forbidden"
+        if status_code == 429:
+            return "rate_limited"
+        if status_code >= 500:
+            return "starvell_server_error"
+        return f"http_{status_code}"
+    if isinstance(exc, httpx.TimeoutException):
+        return "timeout"
+    reason = str(exc).strip()
+    return reason or type(exc).__name__
+
+
+def _error_kind_from_status(status_code: int) -> str | None:
+    if status_code == 429:
+        return "429"
+    if status_code == 403:
+        return "403"
+    if status_code == 401:
+        return "401"
+    if status_code >= 500:
+        return "5xx"
+    return None
 
 
 def _safe_error(exc: Exception) -> str:

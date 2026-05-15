@@ -1,5 +1,6 @@
 import asyncio
 import os
+import random
 import socket
 import time
 
@@ -15,13 +16,22 @@ from app.db.repositories import (
     WorkerHeartbeatRepository,
     WorkerStateRepository,
 )
-from app.market.client import StarvellClient
+from app.market.client import StarvellClient, safe_starvell_error_reason
 from app.repricer.engine import RepricerEngine
 from app.repricer.locks import RedisPositionLock
 from app.repricer.priority_queue import PercentagePositionQueue
 from app.core.network import mask_proxy_url
-from app.repricer.rate_limiter import CompositeRateLimiter, RedisFixedWindowRateLimiter
-from app.repricer.worker_groups import WORKER_GROUP_ALL
+from app.repricer.rate_limiter import (
+    CompositeRateLimiter,
+    RedisFixedWindowRateLimiter,
+    adaptive_backoff_seconds,
+)
+from app.repricer.worker_groups import (
+    WORKER_GROUP_ALL,
+    WORKER_GROUP_FAST_1,
+    WORKER_GROUP_FAST_2,
+    WORKER_GROUP_SLOW,
+)
 
 
 class RepricerScheduler:
@@ -53,6 +63,8 @@ class RepricerScheduler:
         self.errors_timeout = 0
         self.consecutive_errors = 0
         self.safe_mode_until = 0.0
+        self.last_error_kind: str | None = None
+        self.last_safe_mode_delay_seconds = 0.0
         self.rate_limiter = self._build_rate_limiter()
         self.logger = get_logger(__name__)
 
@@ -75,7 +87,7 @@ class RepricerScheduler:
                 try:
                     await self.run_once(starvell_client)
                 except Exception as exc:
-                    error = str(exc).strip() or type(exc).__name__
+                    error = safe_starvell_error_reason(exc)
                     await self._mark_error(exc)
                     self.logger.exception(
                         "repricer_scheduler_cycle_failed",
@@ -99,14 +111,15 @@ class RepricerScheduler:
 
     async def run_once(self, starvell_client: StarvellClient) -> None:
         if self._safe_mode_active():
+            remaining = self._safe_mode_remaining_seconds()
             async with self.session_factory() as session:
                 await self._write_heartbeat(
                     session,
-                    status="safe_mode",
+                    status=self._safe_mode_status(),
                     dry_run=self.settings.dry_run,
                 )
                 await session.commit()
-            await asyncio.sleep(self.settings.worker_safe_mode_seconds)
+            await asyncio.sleep(max(remaining, 0.1))
             return
 
         async with self.session_factory() as session:
@@ -175,6 +188,8 @@ class RepricerScheduler:
                     new_price=str(result.new_price),
                     competitor_price=str(result.competitor_price),
                 )
+                if not self._safe_mode_active():
+                    await asyncio.sleep(self._profile_jitter_sleep_seconds())
                 return
 
             await self._mark_idle(
@@ -234,11 +249,14 @@ class RepricerScheduler:
         error_kind = self._error_kind(status, reason)
         if error_kind is None:
             self.consecutive_errors = 0
+            self.last_error_kind = None
+            self.last_safe_mode_delay_seconds = 0.0
             if hasattr(self.rate_limiter, "reset_backoff"):
                 self.rate_limiter.reset_backoff()
             return
 
         self.consecutive_errors += 1
+        self.last_error_kind = error_kind
         if error_kind == "429":
             self.errors_429 += 1
         elif error_kind == "403":
@@ -246,35 +264,40 @@ class RepricerScheduler:
         elif error_kind == "timeout":
             self.errors_timeout += 1
 
-        if error_kind in {"429", "timeout"} and hasattr(self.rate_limiter, "apply_backoff"):
-            self.rate_limiter.apply_backoff()
-
         if self._should_enter_safe_mode(error_kind):
-            self.safe_mode_until = time.monotonic() + self.settings.safe_mode_cooldown_seconds
-
-        if error_kind in {"429", "403", "timeout"}:
-            await asyncio.sleep(self.settings.worker_error_backoff_seconds)
+            self.last_safe_mode_delay_seconds = adaptive_backoff_seconds(
+                self.consecutive_errors
+            )
+            self.safe_mode_until = time.monotonic() + self.last_safe_mode_delay_seconds
 
     async def _mark_error(self, exc: Exception) -> None:
-        await self._update_error_state("failed", str(exc).strip() or type(exc).__name__)
+        await self._update_error_state("failed", safe_starvell_error_reason(exc))
 
     def _safe_mode_active(self) -> bool:
         return time.monotonic() < self.safe_mode_until
 
+    def _safe_mode_remaining_seconds(self) -> float:
+        return max(self.safe_mode_until - time.monotonic(), 0.0)
+
+    def _safe_mode_status(self) -> str:
+        if not self.last_error_kind:
+            return "safe_mode"
+        return f"safe_mode_{self.last_error_kind}"
+
     def _heartbeat_status(self, status: str) -> str:
         if self._safe_mode_active():
-            return "safe_mode"
+            return self._safe_mode_status()
         return status
 
     def _error_kind(self, status: str, reason: str) -> str | None:
         if status != "failed":
             return None
         normalized = reason.lower()
-        if "429" in normalized:
+        if normalized in {"rate_limited", "429"} or "429" in normalized:
             return "429"
-        if "403" in normalized:
+        if normalized in {"forbidden", "403"} or "403" in normalized:
             return "403"
-        if "timeout" in normalized or "таймаут" in normalized:
+        if normalized == "timeout" or "timeout" in normalized or "таймаут" in normalized:
             return "timeout"
         return "failed"
 
@@ -319,4 +342,17 @@ class RepricerScheduler:
             return True
         if error_kind == "403" and self.settings.safe_mode_on_403:
             return True
+        if error_kind == "timeout":
+            return True
         return self.consecutive_errors >= self.settings.worker_safe_mode_error_threshold
+
+    def _profile_jitter_sleep_seconds(self) -> float:
+        positions_count = max(len(self.settings.assigned_positions), 1)
+        base = 60 * positions_count / self.settings.worker_request_limit_per_minute
+        if self.settings.worker_group == WORKER_GROUP_FAST_1:
+            return random.uniform(max(base - 0.2, 0.1), base + 0.4)
+        if self.settings.worker_group == WORKER_GROUP_FAST_2:
+            return random.uniform(max(base - 0.2, 0.1), base + 0.4)
+        if self.settings.worker_group == WORKER_GROUP_SLOW:
+            return random.uniform(max(base - 0.4, 0.1), base + 1.1)
+        return random.uniform(max(base * 0.9, 0.1), max(base * 1.2, 0.2))
