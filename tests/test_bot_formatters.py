@@ -238,6 +238,71 @@ def test_proxy_status_does_not_show_high_normal_budget() -> None:
     assert "Normal:" not in text
 
 
+def test_proxy_status_shows_effective_limit_backoff_and_last_429() -> None:
+    settings = Settings(_env_file=None)
+    heartbeat = WorkerHeartbeat(
+        worker_group="fast_1",
+        hostname="server",
+        public_ip="45.132.20.115",
+        assigned_positions=[500, 800, 1000],
+        request_limit_per_minute=100,
+        effective_request_limit_per_minute=80,
+        last_seen_at=datetime.now(UTC),
+        status="safe_mode_429",
+        errors_429=2,
+        consecutive_errors=2,
+        backoff_active=True,
+        last_429_at=datetime(2026, 5, 15, 19, 10, tzinfo=UTC),
+        safe_mode=True,
+        dry_run=True,
+    )
+
+    text = format_proxy_status(
+        worker_states=[],
+        heartbeats=[heartbeat],
+        dry_run=True,
+        request_usage=12,
+        global_limit=settings.global_request_limit_per_minute,
+        group_infos=settings.worker_group_infos,
+        success_count=0,
+        error_count=2,
+        recent_errors=[],
+        last_positions_by_amount={},
+    )
+
+    assert "Configured limit: 100/мин" in text
+    assert "Effective limit: 80/мин" in text
+    assert "Backoff: активен" in text
+    assert "Last 429: 15.05.2026 22:10" in text
+    assert "Частота: ~2.2 сек" in text
+
+
+def test_position_card_uses_effective_proxy_frequency_after_backoff() -> None:
+    settings = Settings(_env_file=None)
+    heartbeat = WorkerHeartbeat(
+        worker_group="fast_1",
+        hostname="server",
+        public_ip="45.132.20.115",
+        assigned_positions=[500, 800, 1000],
+        request_limit_per_minute=100,
+        effective_request_limit_per_minute=50,
+        last_seen_at=datetime.now(UTC),
+        status="dry_run",
+        backoff_active=True,
+        dry_run=True,
+    )
+
+    text = format_position_card(
+        _position(500, "2000"),
+        proxy_mode="enabled",
+        group_infos=settings.worker_group_infos,
+        heartbeats=[heartbeat],
+    )
+
+    assert "🌐 Прокси-группа: Fast 1" in text
+    assert "⏱ Частота проверки: ~3.6 сек" in text
+
+
 def test_proxy_status_explains_safe_mode_without_technical_links() -> None:
     settings = Settings(_env_file=None)
     heartbeat = WorkerHeartbeat(

@@ -38,6 +38,7 @@ async def general_settings(
     await answer_loading(callback)
     async with session_factory() as session:
         dry_run = await AppSettingsRepository(session).get_bool("dry_run", settings.dry_run)
+        heartbeats = await WorkerHeartbeatRepository(session).list_all()
     await safe_edit_text(
         callback,
         format_general_settings(
@@ -48,6 +49,7 @@ async def general_settings(
             proxy_mode=settings.proxy_mode,
             global_limit=settings.global_request_limit_per_minute,
             group_infos=settings.worker_group_infos,
+            heartbeats=heartbeats,
         ),
         reply_markup=general_settings_keyboard(dry_run=dry_run),
     )

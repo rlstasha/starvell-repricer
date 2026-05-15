@@ -126,6 +126,14 @@ class CompositeRateLimiter:
         self._extra_delay_ms = 0.0
         self._consecutive_errors = 0
 
+    @property
+    def backoff_active(self) -> bool:
+        return self._extra_delay_ms > 0
+
+    def set_profile_limit(self, limit: int) -> None:
+        if hasattr(self.profile_limiter, "limit"):
+            self.profile_limiter.limit = limit
+
     async def _sleep_after_request(self) -> None:
         delay_ms = self.min_delay_ms + self._extra_delay_ms
         if self.jitter_ms > 0:

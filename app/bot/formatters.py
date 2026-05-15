@@ -360,9 +360,14 @@ def format_general_settings(
     proxy_mode: str = "disabled",
     global_limit: int | None = None,
     group_infos: list[WorkerGroupInfo] | None = None,
+    heartbeats: list[WorkerHeartbeat] | None = None,
 ) -> str:
     mode = "включен" if dry_run else "выключен"
     if _use_proxy_ui(proxy_mode) and group_infos:
+        heartbeat_by_group = {
+            heartbeat.worker_group: heartbeat
+            for heartbeat in (heartbeats or [])
+        }
         lines = [
             SEPARATOR,
             "⚙️ Общие настройки",
@@ -373,12 +378,18 @@ def format_general_settings(
             "",
         ]
         for info in group_infos:
+            heartbeat = heartbeat_by_group.get(info.name) or heartbeat_by_group.get("all")
+            configured_limit = _configured_limit(info, heartbeat)
+            effective_limit = _effective_limit(info, heartbeat)
             lines.extend(
                 [
                     f"{info.icon} {info.label}",
-                    f"• Лимит: {info.request_limit_per_minute}/мин",
+                    f"• Configured limit: {configured_limit}/мин",
+                    f"• Effective limit: {effective_limit}/мин",
+                    f"• Backoff: {_backoff_text(info, heartbeat)}",
+                    f"• Last 429: {_last_429_text(heartbeat)}",
                     f"• Позиции: {_positions_inline(info.positions)}",
-                    f"• Частота: {_server_frequency(info.request_limit_per_minute, len(info.positions))}",
+                    f"• Частота: {_server_frequency(effective_limit, len(info.positions))}",
                     "",
                 ]
             )
@@ -551,12 +562,17 @@ def format_proxy_status(
             heartbeat
             and (now - heartbeat.last_seen_at).total_seconds() <= 90
         )
+        configured_limit = _configured_limit(info, heartbeat)
+        effective_limit = _effective_limit(info, heartbeat)
         lines.extend(
             [
                 f"{info.icon} {info.label}",
                 f"• Позиции: {_positions_inline(info.positions)}",
-                f"• Лимит: {info.request_limit_per_minute}/мин",
-                f"• Частота: {_server_frequency(info.request_limit_per_minute, len(info.positions))}",
+                f"• Configured limit: {configured_limit}/мин",
+                f"• Effective limit: {effective_limit}/мин",
+                f"• Backoff: {_backoff_text(info, heartbeat)}",
+                f"• Last 429: {_last_429_text(heartbeat)}",
+                f"• Частота: {_server_frequency(effective_limit, len(info.positions))}",
                 f"• IP: {heartbeat.public_ip if heartbeat and heartbeat.public_ip else 'нет данных'}",
                 f"• Статус: {_server_status(heartbeat, is_active)}",
             ]
@@ -646,12 +662,17 @@ def format_proxy_profiles(
             heartbeat
             and (now - heartbeat.last_seen_at).total_seconds() <= 90
         )
+        configured_limit = _configured_limit(info, heartbeat)
+        effective_limit = _effective_limit(info, heartbeat)
         lines.extend(
             [
                 f"{info.icon} {info.label}",
                 _positions_inline(info.positions),
-                f"{info.request_limit_per_minute}/мин · "
-                f"{_server_frequency(info.request_limit_per_minute, len(info.positions))}",
+                f"Configured limit: {configured_limit}/мин",
+                f"Effective limit: {effective_limit}/мин · "
+                f"{_server_frequency(effective_limit, len(info.positions))}",
+                f"Backoff: {_backoff_text(info, heartbeat)}",
+                f"Last 429: {_last_429_text(heartbeat)}",
                 f"IP: {heartbeat.public_ip if heartbeat and heartbeat.public_ip else 'нет данных'}",
                 f"Статус: {_server_status(heartbeat, is_active)}",
                 f"Последний сигнал: {dt(heartbeat.last_seen_at if heartbeat else None)}",
@@ -854,6 +875,49 @@ def _server_frequency(request_limit: int, position_count: int) -> str:
     return f"~{_duration(seconds)}"
 
 
+def _configured_limit(
+    info: WorkerGroupInfo,
+    heartbeat: WorkerHeartbeat | None,
+) -> int:
+    if heartbeat and heartbeat.request_limit_per_minute:
+        return heartbeat.request_limit_per_minute
+    return info.request_limit_per_minute
+
+
+def _effective_limit(
+    info: WorkerGroupInfo,
+    heartbeat: WorkerHeartbeat | None,
+) -> int:
+    value = getattr(heartbeat, "effective_request_limit_per_minute", None)
+    if value:
+        return int(value)
+    return _configured_limit(info, heartbeat)
+
+
+def _backoff_text(
+    info: WorkerGroupInfo,
+    heartbeat: WorkerHeartbeat | None,
+) -> str:
+    return "активен" if _backoff_active(info, heartbeat) else "нет"
+
+
+def _backoff_active(
+    info: WorkerGroupInfo,
+    heartbeat: WorkerHeartbeat | None,
+) -> bool:
+    if heartbeat is None:
+        return False
+    return bool(
+        getattr(heartbeat, "backoff_active", False)
+        or _is_safe_mode_heartbeat(heartbeat)
+        or _effective_limit(info, heartbeat) < _configured_limit(info, heartbeat)
+    )
+
+
+def _last_429_text(heartbeat: WorkerHeartbeat | None) -> str:
+    return dt(getattr(heartbeat, "last_429_at", None))
+
+
 def _server_status(heartbeat: WorkerHeartbeat | None, is_active: bool) -> str:
     if heartbeat is None:
         return "⚪ нет сигнала"
@@ -944,9 +1008,10 @@ def _position_proxy_context_lines(
             f"🌍 IP: {heartbeat.public_ip if heartbeat and heartbeat.public_ip else 'нет данных'}"
         )
     if include_frequency:
+        effective_limit = _effective_limit(info, heartbeat)
         lines.append(
             "⏱ Частота проверки: "
-            f"{_server_frequency(info.request_limit_per_minute, len(info.positions))}"
+            f"{_server_frequency(effective_limit, len(info.positions))}"
         )
     return lines
 

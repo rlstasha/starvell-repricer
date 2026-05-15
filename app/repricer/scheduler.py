@@ -3,6 +3,7 @@ import os
 import random
 import socket
 import time
+from datetime import UTC, datetime
 
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import async_sessionmaker
@@ -32,6 +33,11 @@ from app.repricer.worker_groups import (
     WORKER_GROUP_FAST_2,
     WORKER_GROUP_SLOW,
 )
+
+
+RAMP_UP_IDLE_SECONDS = 10 * 60
+RAMP_UP_STEP_PER_MINUTE = 10
+MIN_EFFECTIVE_REQUEST_LIMIT_PER_MINUTE = 10
 
 
 class RepricerScheduler:
@@ -65,6 +71,10 @@ class RepricerScheduler:
         self.safe_mode_until = 0.0
         self.last_error_kind: str | None = None
         self.last_safe_mode_delay_seconds = 0.0
+        self.configured_request_limit_per_minute = settings.worker_request_limit_per_minute
+        self.effective_request_limit_per_minute = self.configured_request_limit_per_minute
+        self.last_429_at: datetime | None = None
+        self.last_limit_ramp_monotonic = time.monotonic()
         self.rate_limiter = self._build_rate_limiter()
         self.logger = get_logger(__name__)
 
@@ -76,6 +86,7 @@ class RepricerScheduler:
             proxy_profile=self.settings.worker_group,
             proxy=mask_proxy_url(proxy_url),
             request_limit_per_minute=self.settings.worker_request_limit_per_minute,
+            effective_request_limit_per_minute=self.effective_request_limit_per_minute,
         )
         async with StarvellClient(
             self.settings,
@@ -230,22 +241,26 @@ class RepricerScheduler:
         status: str,
         dry_run: bool,
     ) -> None:
+        self._maybe_ramp_up_limit()
         await WorkerHeartbeatRepository(session).upsert(
             worker_group=self.settings.worker_group,
             hostname=self.hostname,
             public_ip=self.public_ip,
             assigned_positions=list(self.settings.assigned_positions),
             request_limit_per_minute=self.settings.worker_request_limit_per_minute,
+            effective_request_limit_per_minute=self.effective_request_limit_per_minute,
             status=status,
             errors_429=self.errors_429,
             errors_403=self.errors_403,
             errors_timeout=self.errors_timeout,
             consecutive_errors=self.consecutive_errors,
+            backoff_active=self._backoff_active(),
+            last_429_at=self.last_429_at,
             safe_mode=self._safe_mode_active(),
             dry_run=dry_run,
         )
 
-    async def _update_error_state(self, status: str, reason: str) -> None:
+    async def _update_error_state(self, status: str, reason: str | None) -> None:
         error_kind = self._error_kind(status, reason)
         if error_kind is None:
             self.consecutive_errors = 0
@@ -253,12 +268,14 @@ class RepricerScheduler:
             self.last_safe_mode_delay_seconds = 0.0
             if hasattr(self.rate_limiter, "reset_backoff"):
                 self.rate_limiter.reset_backoff()
+            self._maybe_ramp_up_limit()
             return
 
         self.consecutive_errors += 1
         self.last_error_kind = error_kind
         if error_kind == "429":
             self.errors_429 += 1
+            self._record_429()
         elif error_kind == "403":
             self.errors_403 += 1
         elif error_kind == "timeout":
@@ -276,6 +293,15 @@ class RepricerScheduler:
     def _safe_mode_active(self) -> bool:
         return time.monotonic() < self.safe_mode_until
 
+    def _backoff_active(self) -> bool:
+        limiter_backoff = bool(getattr(self.rate_limiter, "backoff_active", False))
+        return (
+            self._safe_mode_active()
+            or limiter_backoff
+            or self.effective_request_limit_per_minute
+            < self.configured_request_limit_per_minute
+        )
+
     def _safe_mode_remaining_seconds(self) -> float:
         return max(self.safe_mode_until - time.monotonic(), 0.0)
 
@@ -289,10 +315,10 @@ class RepricerScheduler:
             return self._safe_mode_status()
         return status
 
-    def _error_kind(self, status: str, reason: str) -> str | None:
+    def _error_kind(self, status: str, reason: str | None) -> str | None:
         if status != "failed":
             return None
-        normalized = reason.lower()
+        normalized = (reason or "").lower()
         if normalized in {"rate_limited", "429"} or "429" in normalized:
             return "429"
         if normalized in {"forbidden", "403"} or "403" in normalized:
@@ -309,7 +335,7 @@ class RepricerScheduler:
     def _build_rate_limiter(self) -> CompositeRateLimiter:
         profile = RedisFixedWindowRateLimiter(
             self.redis,
-            limit=self.settings.worker_request_limit_per_minute,
+            limit=self.effective_request_limit_per_minute,
             window_seconds=60,
             key_prefix=f"repricer:rate-limit:{self.settings.worker_group}",
         )
@@ -348,7 +374,7 @@ class RepricerScheduler:
 
     def _profile_jitter_sleep_seconds(self) -> float:
         positions_count = max(len(self.settings.assigned_positions), 1)
-        base = 60 * positions_count / self.settings.worker_request_limit_per_minute
+        base = 60 * positions_count / max(self.effective_request_limit_per_minute, 1)
         if self.settings.worker_group == WORKER_GROUP_FAST_1:
             return random.uniform(max(base - 0.2, 0.1), base + 0.4)
         if self.settings.worker_group == WORKER_GROUP_FAST_2:
@@ -356,3 +382,58 @@ class RepricerScheduler:
         if self.settings.worker_group == WORKER_GROUP_SLOW:
             return random.uniform(max(base - 0.4, 0.1), base + 1.1)
         return random.uniform(max(base * 0.9, 0.1), max(base * 1.2, 0.2))
+
+    def _record_429(self) -> None:
+        now = time.monotonic()
+        self.last_429_at = datetime.now(UTC)
+        self.last_limit_ramp_monotonic = now
+        reduced_limit = max(
+            min(
+                MIN_EFFECTIVE_REQUEST_LIMIT_PER_MINUTE,
+                self.configured_request_limit_per_minute,
+            ),
+            self.effective_request_limit_per_minute - RAMP_UP_STEP_PER_MINUTE,
+        )
+        self._set_effective_request_limit(reduced_limit)
+        self.logger.warning(
+            "repricer_effective_limit_reduced_after_429",
+            worker_group=self.settings.worker_group,
+            configured_request_limit_per_minute=self.configured_request_limit_per_minute,
+            effective_request_limit_per_minute=self.effective_request_limit_per_minute,
+        )
+
+    def _maybe_ramp_up_limit(self, now: float | None = None) -> bool:
+        if self.effective_request_limit_per_minute >= self.configured_request_limit_per_minute:
+            return False
+
+        current = time.monotonic() if now is None else now
+        elapsed = current - self.last_limit_ramp_monotonic
+        if elapsed < RAMP_UP_IDLE_SECONDS:
+            return False
+
+        steps = int(elapsed // RAMP_UP_IDLE_SECONDS)
+        new_limit = min(
+            self.configured_request_limit_per_minute,
+            self.effective_request_limit_per_minute + steps * RAMP_UP_STEP_PER_MINUTE,
+        )
+        if new_limit == self.effective_request_limit_per_minute:
+            return False
+
+        self._set_effective_request_limit(new_limit)
+        self.last_limit_ramp_monotonic += steps * RAMP_UP_IDLE_SECONDS
+        self.logger.info(
+            "repricer_effective_limit_ramped_up",
+            worker_group=self.settings.worker_group,
+            configured_request_limit_per_minute=self.configured_request_limit_per_minute,
+            effective_request_limit_per_minute=self.effective_request_limit_per_minute,
+        )
+        return True
+
+    def _set_effective_request_limit(self, limit: int) -> None:
+        normalized = max(
+            1,
+            min(int(limit), self.configured_request_limit_per_minute),
+        )
+        self.effective_request_limit_per_minute = normalized
+        if hasattr(self, "rate_limiter") and hasattr(self.rate_limiter, "set_profile_limit"):
+            self.rate_limiter.set_profile_limit(normalized)

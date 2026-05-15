@@ -474,11 +474,14 @@ class WorkerHeartbeatRepository:
         public_ip: str | None,
         assigned_positions: list[int],
         request_limit_per_minute: int,
+        effective_request_limit_per_minute: int,
         status: str,
         errors_429: int,
         errors_403: int,
         errors_timeout: int,
         consecutive_errors: int,
+        backoff_active: bool,
+        last_429_at: datetime | None,
         safe_mode: bool,
         dry_run: bool,
     ) -> None:
@@ -494,12 +497,15 @@ class WorkerHeartbeatRepository:
                     public_ip=public_ip,
                     assigned_positions=assigned_positions,
                     request_limit_per_minute=request_limit_per_minute,
+                    effective_request_limit_per_minute=effective_request_limit_per_minute,
                     last_seen_at=now,
                     status=status,
                     errors_429=errors_429,
                     errors_403=errors_403,
                     errors_timeout=errors_timeout,
                     consecutive_errors=consecutive_errors,
+                    backoff_active=backoff_active,
+                    last_429_at=last_429_at,
                     safe_mode=safe_mode,
                     dry_run=dry_run,
                 )
@@ -510,12 +516,15 @@ class WorkerHeartbeatRepository:
         heartbeat.public_ip = public_ip
         heartbeat.assigned_positions = assigned_positions
         heartbeat.request_limit_per_minute = request_limit_per_minute
+        heartbeat.effective_request_limit_per_minute = effective_request_limit_per_minute
         heartbeat.last_seen_at = now
         heartbeat.status = status
         heartbeat.errors_429 = errors_429
         heartbeat.errors_403 = errors_403
         heartbeat.errors_timeout = errors_timeout
         heartbeat.consecutive_errors = consecutive_errors
+        heartbeat.backoff_active = backoff_active
+        heartbeat.last_429_at = last_429_at
         heartbeat.safe_mode = safe_mode
         heartbeat.dry_run = dry_run
 
