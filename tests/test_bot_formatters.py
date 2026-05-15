@@ -1,8 +1,47 @@
 from datetime import UTC, datetime
+from decimal import Decimal
 
-from app.bot.formatters import format_logs, format_worker_servers
+from app.bot.formatters import (
+    format_general_settings,
+    format_logs,
+    format_position_card,
+    format_proxy_status,
+    format_worker_servers,
+)
 from app.core.config import Settings
-from app.db.models import Position, PriceUpdateLog, UpdateStatus, WorkerHeartbeat
+from app.db.models import (
+    Position,
+    PositionSettings,
+    PositionState,
+    PriceUpdateLog,
+    UpdateStatus,
+    WorkerHeartbeat,
+    WorkerState,
+)
+
+
+def _position(amount: int, lot_id: str | None = None) -> Position:
+    position = Position(
+        robux_amount=amount,
+        lot_id=lot_id,
+        enabled=True,
+        priority="high",
+    )
+    position.settings = PositionSettings(
+        min_price=Decimal("1"),
+        max_price=Decimal("9999"),
+        step=Decimal("1"),
+        min_rating=Decimal("4.5"),
+        ignore_no_rating=True,
+        fallback_behavior="keep_current",
+    )
+    position.state = PositionState(
+        current_own_price=Decimal("312.50"),
+        last_seen_competitor_price=Decimal("310.00"),
+        calculated_price=Decimal("309.70"),
+        last_update_time=datetime(2026, 5, 15, 19, 10, tzinfo=UTC),
+    )
+    return position
 
 
 def test_logs_show_all_position_context_for_no_competitors_keep_current_price() -> None:
@@ -21,7 +60,7 @@ def test_logs_show_all_position_context_for_no_competitors_keep_current_price() 
     assert "🕒 Время: 15.05.2026 13:08" in text
     assert "📌 Статус: пропущено" in text
     assert "Причина: Нет подходящих конкурентов. Цена оставлена без изменений." in text
-    assert "Что проверить:" not in text
+    assert "Что проверить: фильтр рейтинга, категорию, список конкурентов" in text
     assert "UTC" not in text
 
 
@@ -74,15 +113,15 @@ def test_worker_servers_show_new_fast_split_and_frequency() -> None:
 
     assert "📊 Прокси и лимиты" in text
     assert "🚀 Fast 1" in text
-    assert "500\n800\n1000" in text
+    assert "500 · 800 · 1000" in text
     assert "~1.8 сек" in text
     assert "🚀 Fast 2" in text
-    assert "400\n1200\n1700\n2000" in text
+    assert "400 · 1200 · 1700 · 2000" in text
     assert "~2.4 сек" in text
     assert "🐢 Slow" in text
     assert "~5.4 сек" in text
     assert "203.0.113.10" in text
-    assert "Dry-run:\nвключен" in text
+    assert "Dry-run: включен" in text
 
 
 def test_proxy_profiles_use_direct_worker_heartbeat_as_fallback() -> None:
@@ -106,3 +145,119 @@ def test_proxy_profiles_use_direct_worker_heartbeat_as_fallback() -> None:
     )
 
     assert text.count("203.0.113.20") == 3
+
+
+def test_position_card_uses_proxy_group_frequency_and_ip() -> None:
+    settings = Settings(_env_file=None)
+    heartbeat = WorkerHeartbeat(
+        worker_group="fast_1",
+        hostname="server",
+        public_ip="45.132.20.115",
+        assigned_positions=[500, 800, 1000],
+        request_limit_per_minute=100,
+        last_seen_at=datetime.now(UTC),
+        status="dry_run",
+        dry_run=True,
+    )
+
+    text = format_position_card(
+        _position(500, "2000"),
+        proxy_mode="enabled",
+        group_infos=settings.worker_group_infos,
+        heartbeats=[heartbeat],
+    )
+
+    assert "🌐 Прокси-группа: Fast 1" in text
+    assert "🌍 IP: 45.132.20.115" in text
+    assert "⏱ Частота проверки: ~1.8 сек" in text
+    assert "High-позиция" not in text
+    assert "Normal" not in text
+
+
+def test_general_settings_are_proxy_aware() -> None:
+    settings = Settings(_env_file=None)
+
+    text = format_general_settings(
+        dry_run=True,
+        request_limit=settings.request_limit_per_minute,
+        high_percent=settings.high_priority_percent,
+        normal_percent=settings.normal_priority_percent,
+        proxy_mode="enabled",
+        global_limit=settings.global_request_limit_per_minute,
+        group_infos=settings.worker_group_infos,
+    )
+
+    assert "🌐 Режим запросов: прокси" in text
+    assert "🚦 Общий лимит: 300/мин" in text
+    assert "🚀 Fast 1" in text
+    assert "500 · 800 · 1000" in text
+    assert "High:" not in text
+    assert "Normal:" not in text
+
+
+def test_proxy_status_does_not_show_high_normal_budget() -> None:
+    settings = Settings(_env_file=None)
+    heartbeat = WorkerHeartbeat(
+        worker_group="fast_2",
+        hostname="server",
+        public_ip="45.132.20.205",
+        assigned_positions=[400, 1200, 1700, 2000],
+        request_limit_per_minute=100,
+        last_seen_at=datetime.now(UTC),
+        status="dry_run",
+        dry_run=True,
+    )
+    worker_state = WorkerState(
+        name="repricer:fast_2",
+        last_heartbeat_at=datetime.now(UTC),
+        last_cycle_at=datetime(2026, 5, 15, 19, 10, tzinfo=UTC),
+        last_position_amount=400,
+        last_status="dry_run",
+        last_error=None,
+    )
+
+    text = format_proxy_status(
+        worker_states=[worker_state],
+        heartbeats=[heartbeat],
+        dry_run=True,
+        request_usage=12,
+        global_limit=settings.global_request_limit_per_minute,
+        group_infos=settings.worker_group_infos,
+        success_count=0,
+        error_count=0,
+        recent_errors=[],
+        last_positions_by_amount={400: _position(400, "1999")},
+    )
+
+    assert "🌐 Режим: прокси" in text
+    assert "🚦 Общий лимит: 300/мин" in text
+    assert "🚀 Fast 2" in text
+    assert "IP: 45.132.20.205" in text
+    assert "Последняя позиция: 400 робуксов, ID 1999" in text
+    assert "High:" not in text
+    assert "Normal:" not in text
+
+
+def test_logs_show_proxy_group_and_missing_reason_text() -> None:
+    settings = Settings(_env_file=None)
+    position = _position(1200, "2004")
+    log = PriceUpdateLog(
+        position_id=1,
+        status=UpdateStatus.FAILED.value,
+        reason="",
+        old_price=Decimal("312.50"),
+        competitor_price=Decimal("310.00"),
+        new_price=Decimal("309.70"),
+        created_at=datetime(2026, 5, 15, 19, 10, tzinfo=UTC),
+    )
+
+    text = format_logs(
+        [(position, log)],
+        proxy_mode="enabled",
+        group_infos=settings.worker_group_infos,
+        heartbeats=[],
+    )
+
+    assert "🌐 Группа: Fast 2" in text
+    assert "Причина: Причина не записана. Нужно проверить лог worker." in text
+    assert "—" not in text

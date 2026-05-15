@@ -55,13 +55,15 @@ class RepricerEngine:
             return result
         except Exception as exc:
             await self.session.rollback()
-            await self._persist_failure(position_amount, exc)
+            reason = str(exc).strip() or type(exc).__name__
+            await self._persist_failure(position_amount, exc, reason)
             self.logger.exception(
                 "repricer_position_failed",
+                proxy_profile=self.settings.worker_group,
                 position_amount=position_amount,
-                error=str(exc),
+                error=reason,
             )
-            return ProcessResult(position_amount, "failed", str(exc), None, None, None)
+            return ProcessResult(position_amount, "failed", reason, None, None, None)
 
     async def _process_loaded_position(self, position: Position) -> ProcessResult:
         if not position.lot_id:
@@ -100,6 +102,7 @@ class RepricerEngine:
         )
         self.logger.info(
             "repricer_competitor_diagnostics",
+            proxy_profile=self.settings.worker_group,
             position_amount=position.robux_amount,
             lot_id=position.lot_id,
             method=market_result.method,
@@ -175,6 +178,7 @@ class RepricerEngine:
             )
             self.logger.info(
                 "repricer_dry_run_price_update",
+                proxy_profile=self.settings.worker_group,
                 position_amount=position.robux_amount,
                 old_price=str(current_price),
                 new_price=str(decision.target_price),
@@ -204,6 +208,7 @@ class RepricerEngine:
         )
         self.logger.info(
             "repricer_price_updated",
+            proxy_profile=self.settings.worker_group,
             position_amount=position.robux_amount,
             old_price=str(current_price),
             new_price=str(decision.target_price),
@@ -249,7 +254,7 @@ class RepricerEngine:
             reason=reason,
         )
 
-    async def _persist_failure(self, position_amount: int, exc: Exception) -> None:
+    async def _persist_failure(self, position_amount: int, exc: Exception, reason: str) -> None:
         position = await self.positions.get_by_amount(position_amount)
         if position is None:
             return
@@ -261,7 +266,7 @@ class RepricerEngine:
             current_own_price=position.state.current_own_price if position.state else None,
             calculated_price=position.state.calculated_price if position.state else None,
             error_status=type(exc).__name__,
-            error_message=str(exc),
+            error_message=reason,
             success=False,
         )
         await self.positions.add_price_log(
@@ -272,7 +277,7 @@ class RepricerEngine:
             competitor_seller_id=None,
             competitor_seller_username=None,
             status=UpdateStatus.FAILED.value,
-            reason=str(exc),
+            reason=reason,
         )
         await self.session.commit()
 

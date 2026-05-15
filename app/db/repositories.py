@@ -426,6 +426,12 @@ class WorkerStateRepository:
     async def get(self, name: str = "repricer") -> WorkerState | None:
         return await self.session.scalar(select(WorkerState).where(WorkerState.name == name))
 
+    async def list_all(self) -> list[WorkerState]:
+        result = await self.session.scalars(
+            select(WorkerState).order_by(WorkerState.updated_at.desc())
+        )
+        return list(result)
+
     async def mark_cycle(
         self,
         *,

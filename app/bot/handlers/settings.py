@@ -8,6 +8,7 @@ from app.bot.formatters import (
     format_general_settings,
     format_logs,
     format_proxy_profiles,
+    format_proxy_status,
     format_status,
 )
 from app.bot.keyboards import back_to_main_keyboard, general_settings_keyboard, main_menu_keyboard
@@ -38,6 +39,9 @@ async def general_settings(
             request_limit=settings.request_limit_per_minute,
             high_percent=settings.high_priority_percent,
             normal_percent=settings.normal_priority_percent,
+            proxy_mode=settings.proxy_mode,
+            global_limit=settings.global_request_limit_per_minute,
+            group_infos=settings.worker_group_infos,
         ),
         reply_markup=general_settings_keyboard(dry_run=dry_run),
     )
@@ -74,28 +78,58 @@ async def show_status(
 ) -> None:
     limiter = RedisFixedWindowRateLimiter(
         redis,
-        limit=settings.request_limit_per_minute,
+        limit=(
+            settings.global_request_limit_per_minute
+            if settings.proxy_mode == "enabled"
+            else settings.request_limit_per_minute
+        ),
         window_seconds=60,
+        key_prefix=(
+            "repricer:rate-limit:global"
+            if settings.proxy_mode == "enabled"
+            else "repricer:rate-limit"
+        ),
     )
     request_usage = await limiter.current_usage()
 
     async with session_factory() as session:
         app_settings = AppSettingsRepository(session)
         positions = PositionRepository(session)
-        worker_state = await WorkerStateRepository(session).get()
+        worker_state_repo = WorkerStateRepository(session)
+        worker_state = await worker_state_repo.get()
+        worker_states = await worker_state_repo.list_all()
+        heartbeats = await WorkerHeartbeatRepository(session).list_all()
         dry_run = await app_settings.get_bool("dry_run", settings.dry_run)
         success_count = await positions.count_price_logs(UpdateStatus.SUCCESS)
         error_count = await positions.count_price_logs(UpdateStatus.FAILED)
         recent_errors = await positions.list_recent_errors_with_positions(limit=5)
         priority_counts = await positions.count_by_priority(enabled_only=True)
+        all_positions = await positions.list_positions()
+        positions_by_amount = {
+            position.robux_amount: position
+            for position in all_positions
+        }
         last_position = (
             await positions.get_by_amount(worker_state.last_position_amount)
             if worker_state and worker_state.last_position_amount
             else None
         )
 
-    await callback.message.edit_text(
-        format_status(
+    if settings.proxy_mode == "enabled":
+        text = format_proxy_status(
+            worker_states=worker_states,
+            heartbeats=heartbeats,
+            dry_run=dry_run,
+            request_usage=request_usage,
+            global_limit=settings.global_request_limit_per_minute,
+            group_infos=settings.worker_group_infos,
+            success_count=success_count,
+            error_count=error_count,
+            recent_errors=recent_errors,
+            last_positions_by_amount=positions_by_amount,
+        )
+    else:
+        text = format_status(
             worker_state=worker_state,
             dry_run=dry_run,
             request_usage=request_usage,
@@ -108,7 +142,10 @@ async def show_status(
             error_count=error_count,
             recent_errors=recent_errors,
             last_position=last_position,
-        ),
+        )
+
+    await callback.message.edit_text(
+        text,
         reply_markup=back_to_main_keyboard(),
     )
     await callback.answer()
@@ -142,12 +179,20 @@ async def show_proxy_profiles(
 async def show_recent_logs(
     callback: CallbackQuery,
     session_factory: async_sessionmaker[AsyncSession],
+    settings: Settings,
 ) -> None:
     async with session_factory() as session:
-        logs = await PositionRepository(session).list_latest_price_logs_by_position()
+        repo = PositionRepository(session)
+        logs = await repo.list_latest_price_logs_by_position()
+        heartbeats = await WorkerHeartbeatRepository(session).list_all()
 
     await callback.message.edit_text(
-        format_logs(logs),
+        format_logs(
+            logs,
+            proxy_mode=settings.proxy_mode,
+            group_infos=settings.worker_group_infos,
+            heartbeats=heartbeats,
+        ),
         reply_markup=back_to_main_keyboard(),
     )
     await callback.answer()

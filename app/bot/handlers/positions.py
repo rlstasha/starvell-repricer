@@ -11,7 +11,7 @@ from app.bot.formatters import format_competitors, format_position_card, format_
 from app.bot.keyboards import position_card_keyboard, positions_keyboard
 from app.core.config import Settings
 from app.db.models import Position
-from app.db.repositories import PositionRepository
+from app.db.repositories import PositionRepository, WorkerHeartbeatRepository
 from app.market.schemas import MarketOffer
 from app.repricer.price_strategy import PriceCalculationSettings, UndercutByStepStrategy
 
@@ -86,11 +86,11 @@ async def position_actions(
         return
 
     if action == "competitors":
-        await _show_competitors(callback, session_factory, amount)
+        await _show_competitors(callback, session_factory, settings, amount)
         return
 
     if action == "test_calc":
-        await _show_price_test(callback, session_factory, amount)
+        await _show_price_test(callback, session_factory, settings, amount)
         return
 
     if action == "edit":
@@ -152,10 +152,12 @@ async def save_position_value(
         await session.commit()
         position = await repo.get_by_amount(amount)
         counts = await repo.count_by_priority(enabled_only=True)
+        heartbeats = await WorkerHeartbeatRepository(session).list_all()
 
     await state.clear()
     await message.answer(
-        "Настройка сохранена.\n\n" + _format_position_card(position, settings, counts),
+        "Настройка сохранена.\n\n"
+        + _format_position_card(position, settings, counts, heartbeats),
         reply_markup=position_card_keyboard(position),
     )
 
@@ -170,11 +172,12 @@ async def _show_card(
         repo = PositionRepository(session)
         position = await repo.get_by_amount(amount)
         counts = await repo.count_by_priority(enabled_only=True)
+        heartbeats = await WorkerHeartbeatRepository(session).list_all()
     if position is None:
         await callback.answer("Позиция не найдена.", show_alert=True)
         return
     await callback.message.edit_text(
-        _format_position_card(position, settings, counts),
+        _format_position_card(position, settings, counts, heartbeats),
         reply_markup=position_card_keyboard(position),
     )
     await callback.answer()
@@ -183,17 +186,25 @@ async def _show_card(
 async def _show_competitors(
     callback: CallbackQuery,
     session_factory: async_sessionmaker[AsyncSession],
+    settings: Settings,
     amount: int,
 ) -> None:
     async with session_factory() as session:
         repo = PositionRepository(session)
         position = await repo.get_by_amount(amount)
         competitors = await repo.list_recent_competitors(position) if position else []
+        heartbeats = await WorkerHeartbeatRepository(session).list_all()
     if position is None:
         await callback.answer("Позиция не найдена.", show_alert=True)
         return
     await callback.message.edit_text(
-        format_competitors(position, competitors),
+        format_competitors(
+            position,
+            competitors,
+            proxy_mode=settings.proxy_mode,
+            group_infos=settings.worker_group_infos,
+            heartbeats=heartbeats,
+        ),
         reply_markup=position_card_keyboard(position),
     )
     await callback.answer()
@@ -202,12 +213,14 @@ async def _show_competitors(
 async def _show_price_test(
     callback: CallbackQuery,
     session_factory: async_sessionmaker[AsyncSession],
+    settings: Settings,
     amount: int,
 ) -> None:
     async with session_factory() as session:
         repo = PositionRepository(session)
         position = await repo.get_by_amount(amount)
         competitors = await repo.list_recent_active_competitors(position) if position else []
+        heartbeats = await WorkerHeartbeatRepository(session).list_all()
 
     if position is None:
         await callback.answer("Позиция не найдена.", show_alert=True)
@@ -242,6 +255,9 @@ async def _show_price_test(
             competitor_price=decision.competitor_price,
             reason=decision.reason,
             should_update=decision.should_update,
+            proxy_mode=settings.proxy_mode,
+            group_infos=settings.worker_group_infos,
+            heartbeats=heartbeats,
         ),
         reply_markup=position_card_keyboard(position),
     )
@@ -277,6 +293,7 @@ def _format_position_card(
     position: Position,
     settings: Settings,
     counts: dict[str, int],
+    heartbeats,
 ) -> str:
     return format_position_card(
         position,
@@ -285,4 +302,7 @@ def _format_position_card(
         normal_percent=settings.normal_priority_percent,
         high_count=counts.get("high", 0),
         normal_count=counts.get("normal", 0),
+        proxy_mode=settings.proxy_mode,
+        group_infos=settings.worker_group_infos,
+        heartbeats=heartbeats,
     )

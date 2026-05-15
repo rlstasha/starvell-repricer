@@ -75,18 +75,19 @@ class RepricerScheduler:
                 try:
                     await self.run_once(starvell_client)
                 except Exception as exc:
+                    error = str(exc).strip() or type(exc).__name__
                     await self._mark_error(exc)
                     self.logger.exception(
                         "repricer_scheduler_cycle_failed",
                         worker_group=self.settings.worker_group,
-                        error=str(exc),
+                        error=error,
                     )
                     async with self.session_factory() as session:
                         await WorkerStateRepository(session).mark_cycle(
                             name=self._worker_state_name(),
                             position_amount=None,
                             status="failed",
-                            error=str(exc),
+                            error=error,
                         )
                         await self._write_heartbeat(
                             session,
@@ -166,6 +167,7 @@ class RepricerScheduler:
                 self.logger.info(
                     "repricer_position_processed",
                     worker_group=self.settings.worker_group,
+                    proxy_profile=self.settings.worker_group,
                     position_amount=result.position_amount,
                     status=result.status,
                     reason=result.reason,
@@ -254,7 +256,7 @@ class RepricerScheduler:
             await asyncio.sleep(self.settings.worker_error_backoff_seconds)
 
     async def _mark_error(self, exc: Exception) -> None:
-        await self._update_error_state("failed", str(exc))
+        await self._update_error_state("failed", str(exc).strip() or type(exc).__name__)
 
     def _safe_mode_active(self) -> bool:
         return time.monotonic() < self.safe_mode_until
