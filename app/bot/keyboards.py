@@ -10,7 +10,7 @@ def main_menu_keyboard(*, dry_run: bool) -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="📦 Позиции", callback_data="positions:list")],
             [InlineKeyboardButton(text="⚙️ Общие настройки", callback_data="settings:general")],
             [InlineKeyboardButton(text="📊 Статус", callback_data="status:show")],
-            [InlineKeyboardButton(text="📊 Серверы и лимиты", callback_data="servers:limits")],
+            [InlineKeyboardButton(text="📊 Прокси и лимиты", callback_data="proxies:limits")],
             [InlineKeyboardButton(text=dry_run_text, callback_data="settings:toggle_dry_run")],
             [InlineKeyboardButton(text="📝 Логи последних действий", callback_data="logs:recent")],
         ]

@@ -72,6 +72,7 @@ def test_worker_servers_show_new_fast_split_and_frequency() -> None:
         global_limit=settings.global_request_limit_per_minute,
     )
 
+    assert "📊 Прокси и лимиты" in text
     assert "🚀 Fast 1" in text
     assert "500\n800\n1000" in text
     assert "~1.8 сек" in text
@@ -82,3 +83,26 @@ def test_worker_servers_show_new_fast_split_and_frequency() -> None:
     assert "~5.4 сек" in text
     assert "203.0.113.10" in text
     assert "Dry-run:\nвключен" in text
+
+
+def test_proxy_profiles_use_direct_worker_heartbeat_as_fallback() -> None:
+    settings = Settings(_env_file=None)
+    heartbeat = WorkerHeartbeat(
+        worker_group="all",
+        hostname="server",
+        public_ip="203.0.113.20",
+        assigned_positions=[500],
+        request_limit_per_minute=100,
+        last_seen_at=datetime.now(UTC),
+        status="dry_run",
+        dry_run=True,
+    )
+
+    text = format_worker_servers(
+        group_infos=settings.worker_group_infos,
+        heartbeats=[heartbeat],
+        dry_run=True,
+        global_limit=settings.global_request_limit_per_minute,
+    )
+
+    assert text.count("203.0.113.20") == 3

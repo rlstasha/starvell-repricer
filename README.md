@@ -17,7 +17,7 @@
 - Стратегия `undercut_by_1`: цена конкурента минус `step`, с ограничениями `min_price` и `max_price`.
 - Fallback: `keep_current` или `set_max_price`.
 - Telegram-бот с owner-only доступом, inline-меню, карточками позиций, статусом, логами и переключателем dry-run.
-- Multi-server режим: `worker-fast-1`, `worker-fast-2`, `worker-slow` с отдельными группами позиций, Redis-lock и heartbeat.
+- Proxy profiles: `proxy_fast_1`, `proxy_fast_2`, `proxy_slow` с отдельными лимитами, Redis-lock и heartbeat.
 - Тесты pytest для ключевых сценариев.
 
 ## Важное про API сайта
@@ -133,6 +133,48 @@ MARKET_OFFERS_LIMIT=100
 
 Секреты не коммитить. Файл `.env` находится в `.gitignore`.
 
+## Proxy profiles
+
+Подробная инструкция: [PROXY_SETUP.md](/Users/user/starvell-repricer/PROXY_SETUP.md).
+
+Один сервер может отправлять запросы Starvell через три proxy/IP:
+
+```env
+PROXY_MODE=enabled
+PROXY_FAST_1_URL=http://login:password@1.1.1.1:8000
+PROXY_FAST_2_URL=http://login:password@2.2.2.2:8000
+PROXY_SLOW_URL=http://login:password@3.3.3.3:8000
+```
+
+Если `PROXY_MODE=disabled` или все `PROXY_*_URL` пустые, проект работает напрямую.
+
+Распределение по умолчанию:
+
+```env
+PROXY_FAST_1_POSITIONS=500,800,1000
+PROXY_FAST_2_POSITIONS=400,1200,1700,2000
+PROXY_SLOW_POSITIONS=40,80,200,2100,2500,3600,4500,10000,22500
+```
+
+Лимиты:
+
+```env
+GLOBAL_REQUEST_LIMIT_PER_MINUTE=300
+PROXY_FAST_1_REQUEST_LIMIT_PER_MINUTE=100
+PROXY_FAST_2_REQUEST_LIMIT_PER_MINUTE=100
+PROXY_SLOW_REQUEST_LIMIT_PER_MINUTE=100
+```
+
+Проверки:
+
+```bash
+python -m app.check_proxy_limits
+python -m app.check_proxies
+```
+
+Proxy login/password не пишутся в логи: показывается только маска вида
+`http://***:***@1.1.1.1:8000`.
+
 ## Dry-run
 
 Dry-run включен по умолчанию:
@@ -179,7 +221,13 @@ docker compose run --rm seed
 Worker:
 
 ```bash
-docker compose up worker-fast-1 worker-fast-2 worker-slow
+docker compose up worker
+```
+
+Ручной split-worker режим оставлен для отладки:
+
+```bash
+docker compose --profile split-workers up worker-fast-1 worker-fast-2 worker-slow
 ```
 
 Telegram-бот:
@@ -190,7 +238,9 @@ docker compose up bot
 
 ## Multi-server режим
 
-Подробная инструкция для 3 VPS находится в [MULTI_SERVER_DEPLOY.md](/Users/user/starvell-repricer/MULTI_SERVER_DEPLOY.md).
+Сейчас основной вариант распределения нагрузки - proxy profiles. Старый вариант с
+несколькими VPS оставлен как дополнительный сценарий:
+[MULTI_SERVER_DEPLOY.md](/Users/user/starvell-repricer/MULTI_SERVER_DEPLOY.md).
 
 Текущая схема:
 
@@ -245,7 +295,7 @@ docker compose -f docker-compose.yml -f docker-compose.worker.yml up -d --build 
 Проверки:
 
 ```bash
-python -m app.check_worker_limits
+python -m app.check_proxy_limits
 python -m app.check_worker_ip
 ```
 
@@ -282,7 +332,7 @@ docker compose up bot
 - `📦 Позиции`
 - `⚙️ Общие настройки`
 - `📊 Статус`
-- `📊 Серверы и лимиты`
+- `📊 Прокси и лимиты`
 - `🧪 Dry-run включить/выключить`
 - `📝 Логи последних действий`
 

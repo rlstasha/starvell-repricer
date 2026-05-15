@@ -407,24 +407,26 @@ def format_status(
     return "\n".join(lines)
 
 
-def format_worker_servers(
+def format_proxy_profiles(
     *,
     group_infos: list[WorkerGroupInfo],
     heartbeats: list[WorkerHeartbeat],
     dry_run: bool,
     global_limit: int,
+    proxy_mode: str = "enabled",
 ) -> str:
     now = datetime.now(UTC)
     heartbeat_by_group = {heartbeat.worker_group: heartbeat for heartbeat in heartbeats}
     safe_mode = any(heartbeat.safe_mode for heartbeat in heartbeats)
     lines = [
         SEPARATOR,
-        "📊 Серверы и лимиты",
+        "📊 Прокси и лимиты",
+        f"Режим прокси: {proxy_mode}",
         "",
     ]
 
     for info in group_infos:
-        heartbeat = heartbeat_by_group.get(info.name)
+        heartbeat = heartbeat_by_group.get(info.name) or heartbeat_by_group.get("all")
         is_active = bool(
             heartbeat
             and (now - heartbeat.last_seen_at).total_seconds() <= 90
@@ -468,6 +470,21 @@ def format_worker_servers(
         ]
     )
     return "\n".join(lines)
+
+
+def format_worker_servers(
+    *,
+    group_infos: list[WorkerGroupInfo],
+    heartbeats: list[WorkerHeartbeat],
+    dry_run: bool,
+    global_limit: int,
+) -> str:
+    return format_proxy_profiles(
+        group_infos=group_infos,
+        heartbeats=heartbeats,
+        dry_run=dry_run,
+        global_limit=global_limit,
+    )
 
 
 def format_logs(logs: list[tuple[Position, PriceUpdateLog | None]]) -> str:

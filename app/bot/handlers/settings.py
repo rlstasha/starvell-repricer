@@ -7,8 +7,8 @@ from sqlalchemy.ext.asyncio.session import AsyncSession
 from app.bot.formatters import (
     format_general_settings,
     format_logs,
+    format_proxy_profiles,
     format_status,
-    format_worker_servers,
 )
 from app.bot.keyboards import back_to_main_keyboard, general_settings_keyboard, main_menu_keyboard
 from app.core.config import Settings
@@ -114,8 +114,8 @@ async def show_status(
     await callback.answer()
 
 
-@router.callback_query(lambda query: query.data == "servers:limits")
-async def show_worker_servers(
+@router.callback_query(lambda query: query.data in {"proxies:limits", "servers:limits"})
+async def show_proxy_profiles(
     callback: CallbackQuery,
     session_factory: async_sessionmaker[AsyncSession],
     settings: Settings,
@@ -126,11 +126,12 @@ async def show_worker_servers(
         heartbeats = await WorkerHeartbeatRepository(session).list_all()
 
     await callback.message.edit_text(
-        format_worker_servers(
+        format_proxy_profiles(
             group_infos=settings.worker_group_infos,
             heartbeats=heartbeats,
             dry_run=dry_run,
             global_limit=settings.global_request_limit_per_minute,
+            proxy_mode=settings.proxy_mode,
         ),
         reply_markup=back_to_main_keyboard(),
     )

@@ -48,6 +48,26 @@ class Settings(BaseSettings):
     own_seller_id: str | None = None
     own_seller_username: str | None = None
 
+    proxy_mode: str = "enabled"
+    proxy_fast_1_url: str = ""
+    proxy_fast_2_url: str = ""
+    proxy_slow_url: str = ""
+    proxy_fast_1_positions: str = ""
+    proxy_fast_2_positions: str = ""
+    proxy_slow_positions: str = ""
+    proxy_fast_1_request_limit_per_minute: int | None = Field(default=None, ge=1)
+    proxy_fast_2_request_limit_per_minute: int | None = Field(default=None, ge=1)
+    proxy_slow_request_limit_per_minute: int | None = Field(default=None, ge=1)
+    request_burst_limit: int = Field(default=5, ge=1)
+    request_min_delay_ms: int = Field(default=300, ge=0)
+    request_max_delay_ms: int = Field(default=5000, ge=0)
+    request_jitter_ms: int = Field(default=200, ge=0)
+    request_backoff_factor: float = Field(default=2.0, ge=1.0)
+    safe_mode_enabled: bool = True
+    safe_mode_on_429: bool = True
+    safe_mode_on_403: bool = True
+    safe_mode_cooldown_seconds: float = Field(default=300.0, ge=1)
+
     request_limit_per_minute: int = Field(default=100, ge=1)
     global_request_limit_per_minute: int = Field(default=300, ge=1)
     worker_fast_1_request_limit_per_minute: int = Field(default=100, ge=1)
@@ -103,7 +123,32 @@ class Settings(BaseSettings):
     def validate_worker_group(cls, value: str) -> str:
         return normalize_worker_group(value)
 
-    @field_validator("worker_fast_1_positions", "worker_fast_2_positions", "worker_slow_positions")
+    @field_validator("proxy_mode")
+    @classmethod
+    def validate_proxy_mode(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized in {"enabled", "disabled"}:
+            return normalized
+        raise ValueError("PROXY_MODE must be enabled or disabled")
+
+    @field_validator("proxy_fast_1_url", "proxy_fast_2_url", "proxy_slow_url")
+    @classmethod
+    def validate_proxy_url(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            return ""
+        if not value.startswith(("http://", "https://", "socks5://")):
+            raise ValueError("proxy URL must start with http://, https://, or socks5://")
+        return value
+
+    @field_validator(
+        "worker_fast_1_positions",
+        "worker_fast_2_positions",
+        "worker_slow_positions",
+        "proxy_fast_1_positions",
+        "proxy_fast_2_positions",
+        "proxy_slow_positions",
+    )
     @classmethod
     def validate_worker_positions(cls, value: str) -> str:
         parse_position_list(value, ())
@@ -113,6 +158,34 @@ class Settings(BaseSettings):
     def validate_priority_percentages(self) -> "Settings":
         if self.high_priority_percent + self.normal_priority_percent != 100:
             raise ValueError("HIGH_PRIORITY_PERCENT and NORMAL_PRIORITY_PERCENT must sum to 100")
+        if self.request_min_delay_ms > self.request_max_delay_ms:
+            raise ValueError("REQUEST_MIN_DELAY_MS must be <= REQUEST_MAX_DELAY_MS")
+        proxy_limit_total = sum(
+            info.request_limit_per_minute
+            for info in self.worker_group_infos
+        )
+        if proxy_limit_total > self.global_request_limit_per_minute:
+            raise ValueError(
+                "sum of proxy request limits must not exceed GLOBAL_REQUEST_LIMIT_PER_MINUTE"
+            )
+        assigned: dict[int, list[str]] = {}
+        for group, positions in self.worker_group_positions.items():
+            for amount in positions:
+                assigned.setdefault(amount, []).append(group)
+        duplicates = {
+            amount: groups
+            for amount, groups in assigned.items()
+            if len(groups) > 1
+        }
+        if duplicates:
+            details = ", ".join(
+                f"{amount}: {'/'.join(groups)}"
+                for amount, groups in sorted(duplicates.items())
+            )
+            raise ValueError(
+                "positions must not be assigned to multiple proxy profiles: "
+                f"{details}"
+            )
         return self
 
     @property
@@ -141,37 +214,74 @@ class Settings(BaseSettings):
 
     @property
     def worker_request_limit_per_minute(self) -> int:
-        if self.worker_group == WORKER_GROUP_FAST_1:
-            return self.worker_fast_1_request_limit_per_minute
-        if self.worker_group == WORKER_GROUP_FAST_2:
-            return self.worker_fast_2_request_limit_per_minute
-        if self.worker_group == WORKER_GROUP_SLOW:
-            return self.worker_slow_request_limit_per_minute
+        group = normalize_worker_group(self.worker_group)
+        if group in ALL_WORKER_GROUPS:
+            return self.proxy_request_limits[group]
         return self.request_limit_per_minute
 
     @property
     def worker_group_positions(self) -> dict[str, tuple[int, ...]]:
         return {
-            WORKER_GROUP_FAST_1: parse_position_list(
-                self.worker_fast_1_positions,
-                DEFAULT_WORKER_GROUP_POSITIONS[WORKER_GROUP_FAST_1],
+            WORKER_GROUP_FAST_1: self._positions_for_group(
+                proxy_value=self.proxy_fast_1_positions,
+                worker_value=self.worker_fast_1_positions,
+                default=DEFAULT_WORKER_GROUP_POSITIONS[WORKER_GROUP_FAST_1],
             ),
-            WORKER_GROUP_FAST_2: parse_position_list(
-                self.worker_fast_2_positions,
-                DEFAULT_WORKER_GROUP_POSITIONS[WORKER_GROUP_FAST_2],
+            WORKER_GROUP_FAST_2: self._positions_for_group(
+                proxy_value=self.proxy_fast_2_positions,
+                worker_value=self.worker_fast_2_positions,
+                default=DEFAULT_WORKER_GROUP_POSITIONS[WORKER_GROUP_FAST_2],
             ),
-            WORKER_GROUP_SLOW: parse_position_list(
-                self.worker_slow_positions,
-                DEFAULT_WORKER_GROUP_POSITIONS[WORKER_GROUP_SLOW],
+            WORKER_GROUP_SLOW: self._positions_for_group(
+                proxy_value=self.proxy_slow_positions,
+                worker_value=self.worker_slow_positions,
+                default=DEFAULT_WORKER_GROUP_POSITIONS[WORKER_GROUP_SLOW],
             ),
         }
 
     @property
+    def proxy_urls(self) -> dict[str, str]:
+        return {
+            WORKER_GROUP_FAST_1: self.proxy_fast_1_url,
+            WORKER_GROUP_FAST_2: self.proxy_fast_2_url,
+            WORKER_GROUP_SLOW: self.proxy_slow_url,
+        }
+
+    @property
+    def proxy_profiles_enabled(self) -> bool:
+        return self.proxy_mode == "enabled" and any(self.proxy_urls.values())
+
+    @property
+    def proxy_request_limits(self) -> dict[str, int]:
+        return {
+            WORKER_GROUP_FAST_1: (
+                self.proxy_fast_1_request_limit_per_minute
+                or self.worker_fast_1_request_limit_per_minute
+            ),
+            WORKER_GROUP_FAST_2: (
+                self.proxy_fast_2_request_limit_per_minute
+                or self.worker_fast_2_request_limit_per_minute
+            ),
+            WORKER_GROUP_SLOW: (
+                self.proxy_slow_request_limit_per_minute
+                or self.worker_slow_request_limit_per_minute
+            ),
+        }
+
+    def proxy_url_for_group(self, worker_group: str | None = None) -> str | None:
+        if self.proxy_mode != "enabled":
+            return None
+        group = normalize_worker_group(worker_group or self.worker_group)
+        if group == WORKER_GROUP_ALL:
+            return None
+        return self.proxy_urls.get(group) or None
+
+    @property
     def worker_group_infos(self) -> list[WorkerGroupInfo]:
         limits = {
-            WORKER_GROUP_FAST_1: self.worker_fast_1_request_limit_per_minute,
-            WORKER_GROUP_FAST_2: self.worker_fast_2_request_limit_per_minute,
-            WORKER_GROUP_SLOW: self.worker_slow_request_limit_per_minute,
+            WORKER_GROUP_FAST_1: self.proxy_request_limits[WORKER_GROUP_FAST_1],
+            WORKER_GROUP_FAST_2: self.proxy_request_limits[WORKER_GROUP_FAST_2],
+            WORKER_GROUP_SLOW: self.proxy_request_limits[WORKER_GROUP_SLOW],
         }
         positions = self.worker_group_positions
         return [
@@ -184,6 +294,17 @@ class Settings(BaseSettings):
             )
             for group in ALL_WORKER_GROUPS
         ]
+
+    def _positions_for_group(
+        self,
+        *,
+        proxy_value: str,
+        worker_value: str,
+        default: tuple[int, ...],
+    ) -> tuple[int, ...]:
+        if proxy_value.strip():
+            return parse_position_list(proxy_value, default)
+        return parse_position_list(worker_value, default)
 
 
 @lru_cache

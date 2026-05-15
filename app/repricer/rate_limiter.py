@@ -1,4 +1,5 @@
 import asyncio
+import random
 import time
 from collections import defaultdict
 from typing import Protocol
@@ -60,6 +61,69 @@ class RedisFixedWindowRateLimiter:
     async def current_usage(self) -> int:
         value = await self.redis.get(self._window_key())
         return int(value or 0)
+
+
+class CompositeRateLimiter:
+    """Profile limiter + global limiter + small pacing/backoff guard."""
+
+    def __init__(
+        self,
+        *,
+        profile_limiter: RateLimiter,
+        global_limiter: RateLimiter,
+        burst_limiter: RateLimiter | None = None,
+        min_delay_ms: int = 0,
+        max_delay_ms: int = 5000,
+        jitter_ms: int = 0,
+        backoff_factor: float = 2.0,
+        sleeper=asyncio.sleep,
+    ):
+        self.profile_limiter = profile_limiter
+        self.global_limiter = global_limiter
+        self.burst_limiter = burst_limiter
+        self.min_delay_ms = min_delay_ms
+        self.max_delay_ms = max_delay_ms
+        self.jitter_ms = jitter_ms
+        self.backoff_factor = backoff_factor
+        self.sleeper = sleeper
+        self._extra_delay_ms = 0.0
+
+    async def try_acquire(self, cost: int = 1) -> bool:
+        if self.burst_limiter and not await self.burst_limiter.try_acquire(cost):
+            return False
+        if not await self.profile_limiter.try_acquire(cost):
+            return False
+        return await self.global_limiter.try_acquire(cost)
+
+    async def acquire(self, cost: int = 1) -> None:
+        if self.burst_limiter is not None:
+            await self.burst_limiter.acquire(cost)
+        await self.profile_limiter.acquire(cost)
+        await self.global_limiter.acquire(cost)
+        await self._sleep_after_request()
+
+    async def current_usage(self) -> int:
+        return await self.profile_limiter.current_usage()
+
+    def apply_backoff(self) -> None:
+        base_delay = max(self.min_delay_ms, 1)
+        next_delay = (
+            self._extra_delay_ms * self.backoff_factor
+            if self._extra_delay_ms
+            else base_delay
+        )
+        self._extra_delay_ms = min(next_delay, self.max_delay_ms)
+
+    def reset_backoff(self) -> None:
+        self._extra_delay_ms = 0.0
+
+    async def _sleep_after_request(self) -> None:
+        delay_ms = self.min_delay_ms + self._extra_delay_ms
+        if self.jitter_ms > 0:
+            delay_ms += random.uniform(0, self.jitter_ms)
+        delay_ms = min(delay_ms, self.max_delay_ms)
+        if delay_ms > 0:
+            await self.sleeper(delay_ms / 1000)
 
 
 class InMemoryFixedWindowRateLimiter:

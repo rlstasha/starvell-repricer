@@ -1,5 +1,9 @@
 # Multi-Server Deploy: 2 быстрых VPS и 1 медленный
 
+> Текущий рекомендуемый вариант - один сервер с proxy profiles. Смотрите
+> [PROXY_SETUP.md](/Users/user/starvell-repricer/PROXY_SETUP.md). Этот документ
+> оставлен как запасной сценарий для отдельного VPS на каждую группу.
+
 Этот документ описывает простой production-запуск Starvell Repricer на нескольких VPS.
 
 ## Что такое основные слова

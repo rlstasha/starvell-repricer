@@ -9,6 +9,7 @@ import httpx
 
 from app.core.config import Settings
 from app.core.logging import get_logger
+from app.core.network import mask_proxy_url
 from app.market.exceptions import StarvellEndpointNotConfiguredError, StarvellWriteDisabledError
 from app.market.schemas import (
     AccountInfo,
@@ -119,21 +120,29 @@ class StarvellClient:
         settings: Settings,
         rate_limiter: RateLimiter,
         http_client: httpx.AsyncClient | None = None,
+        *,
+        proxy_profile: str | None = None,
+        proxy_url: str | None = None,
     ):
         self.settings = settings
         self.rate_limiter = rate_limiter
         self._http_client = http_client
         self._owns_http_client = http_client is None
+        self.proxy_profile = proxy_profile
+        self.proxy_url = proxy_url
         self.logger = get_logger(__name__)
 
     async def __aenter__(self) -> "StarvellClient":
         if self._http_client is None:
-            self._http_client = httpx.AsyncClient(
-                base_url=self.settings.market_base_url,
-                timeout=httpx.Timeout(30.0),
-                headers=self._default_headers(),
-                cookies=self._default_cookies(),
-            )
+            client_kwargs = {
+                "base_url": self.settings.market_base_url,
+                "timeout": httpx.Timeout(30.0),
+                "headers": self._default_headers(),
+                "cookies": self._default_cookies(),
+            }
+            if self.proxy_url:
+                client_kwargs["proxy"] = self.proxy_url
+            self._http_client = httpx.AsyncClient(**client_kwargs)
         return self
 
     async def __aexit__(self, exc_type, exc, tb) -> None:
@@ -163,17 +172,43 @@ class StarvellClient:
     ) -> httpx.Response:
         if self._http_client is None:
             raise RuntimeError("StarvellClient must be used as an async context manager")
-        await self.rate_limiter.acquire()
-        response = await self._http_client.request(method, url, **kwargs)
-        self.logger.info(
-            "starvell_http_request",
-            method=method,
-            url=url,
-            request_type=request_type,
-            status_code=response.status_code,
-        )
-        response.raise_for_status()
-        return response
+        attempts = 2
+        for attempt in range(1, attempts + 1):
+            await self.rate_limiter.acquire()
+            try:
+                response = await self._http_client.request(method, url, **kwargs)
+            except httpx.TimeoutException:
+                if hasattr(self.rate_limiter, "apply_backoff"):
+                    self.rate_limiter.apply_backoff()
+                self.logger.warning(
+                    "starvell_http_timeout",
+                    method=method,
+                    url=url,
+                    request_type=request_type,
+                    proxy_profile=self.proxy_profile or "direct",
+                    proxy=mask_proxy_url(self.proxy_url),
+                    attempt=attempt,
+                    will_retry=attempt < attempts,
+                )
+                if attempt < attempts:
+                    continue
+                raise
+
+            if response.status_code == 429 and hasattr(self.rate_limiter, "apply_backoff"):
+                self.rate_limiter.apply_backoff()
+            self.logger.info(
+                "starvell_http_request",
+                method=method,
+                url=url,
+                request_type=request_type,
+                status_code=response.status_code,
+                proxy_profile=self.proxy_profile or "direct",
+                proxy=mask_proxy_url(self.proxy_url),
+            )
+            response.raise_for_status()
+            return response
+
+        raise RuntimeError("Starvell request retry loop ended unexpectedly")
 
     async def _get_json(self, url: str, *, request_type: str) -> tuple[Any, int]:
         response = await self._request("GET", url, request_type=request_type)

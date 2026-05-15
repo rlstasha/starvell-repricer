@@ -6,7 +6,11 @@ from app.core.network import resolve_public_ip
 
 async def amain() -> int:
     settings = get_settings()
-    public_ip = await resolve_public_ip(settings.public_ip)
+    proxy_url = settings.proxy_url_for_group()
+    public_ip = await resolve_public_ip(
+        settings.public_ip if proxy_url is None else None,
+        proxy_url=proxy_url,
+    )
     assigned_positions = ",".join(str(amount) for amount in settings.assigned_positions)
 
     print(f"Worker group: {settings.worker_group}")

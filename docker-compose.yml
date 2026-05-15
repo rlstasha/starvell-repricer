@@ -54,8 +54,6 @@ services:
   worker:
     build: .
     env_file: .env
-    profiles:
-      - legacy-worker
     command: python -m app.worker_main
     depends_on:
       seed:
@@ -66,6 +64,8 @@ services:
   worker-fast-1:
     build: .
     env_file: .env
+    profiles:
+      - split-workers
     environment:
       APP_MODE: worker
       WORKER_GROUP: fast_1
@@ -79,6 +79,8 @@ services:
   worker-fast-2:
     build: .
     env_file: .env
+    profiles:
+      - split-workers
     environment:
       APP_MODE: worker
       WORKER_GROUP: fast_2
@@ -92,6 +94,8 @@ services:
   worker-slow:
     build: .
     env_file: .env
+    profiles:
+      - split-workers
     environment:
       APP_MODE: worker
       WORKER_GROUP: slow

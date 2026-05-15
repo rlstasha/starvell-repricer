@@ -19,7 +19,8 @@ from app.market.client import StarvellClient
 from app.repricer.engine import RepricerEngine
 from app.repricer.locks import RedisPositionLock
 from app.repricer.priority_queue import PercentagePositionQueue
-from app.repricer.rate_limiter import RedisFixedWindowRateLimiter
+from app.core.network import mask_proxy_url
+from app.repricer.rate_limiter import CompositeRateLimiter, RedisFixedWindowRateLimiter
 from app.repricer.worker_groups import WORKER_GROUP_ALL
 
 
@@ -52,16 +53,24 @@ class RepricerScheduler:
         self.errors_timeout = 0
         self.consecutive_errors = 0
         self.safe_mode_until = 0.0
+        self.rate_limiter = self._build_rate_limiter()
         self.logger = get_logger(__name__)
 
     async def run_forever(self) -> None:
-        rate_limiter = RedisFixedWindowRateLimiter(
-            self.redis,
-            limit=self.settings.worker_request_limit_per_minute,
-            window_seconds=60,
-            key_prefix=f"repricer:rate-limit:{self.settings.worker_group}",
+        proxy_url = self.settings.proxy_url_for_group()
+        self.logger.info(
+            "repricer_scheduler_started",
+            worker_group=self.settings.worker_group,
+            proxy_profile=self.settings.worker_group,
+            proxy=mask_proxy_url(proxy_url),
+            request_limit_per_minute=self.settings.worker_request_limit_per_minute,
         )
-        async with StarvellClient(self.settings, rate_limiter) as starvell_client:
+        async with StarvellClient(
+            self.settings,
+            self.rate_limiter,
+            proxy_profile=self.settings.worker_group,
+            proxy_url=proxy_url,
+        ) as starvell_client:
             while True:
                 try:
                     await self.run_once(starvell_client)
@@ -168,7 +177,7 @@ class RepricerScheduler:
 
             await self._mark_idle(
                 session,
-                "Все позиции этой группы сейчас заблокированы",
+                "Позиции группы заблокированы",
             )
             await asyncio.sleep(self.settings.scheduler_idle_sleep_seconds)
 
@@ -223,6 +232,8 @@ class RepricerScheduler:
         error_kind = self._error_kind(status, reason)
         if error_kind is None:
             self.consecutive_errors = 0
+            if hasattr(self.rate_limiter, "reset_backoff"):
+                self.rate_limiter.reset_backoff()
             return
 
         self.consecutive_errors += 1
@@ -233,8 +244,11 @@ class RepricerScheduler:
         elif error_kind == "timeout":
             self.errors_timeout += 1
 
-        if self.consecutive_errors >= self.settings.worker_safe_mode_error_threshold:
-            self.safe_mode_until = time.monotonic() + self.settings.worker_safe_mode_seconds
+        if error_kind in {"429", "timeout"} and hasattr(self.rate_limiter, "apply_backoff"):
+            self.rate_limiter.apply_backoff()
+
+        if self._should_enter_safe_mode(error_kind):
+            self.safe_mode_until = time.monotonic() + self.settings.safe_mode_cooldown_seconds
 
         if error_kind in {"429", "403", "timeout"}:
             await asyncio.sleep(self.settings.worker_error_backoff_seconds)
@@ -266,3 +280,41 @@ class RepricerScheduler:
         if self.settings.worker_group == WORKER_GROUP_ALL:
             return "repricer"
         return f"repricer:{self.settings.worker_group}"
+
+    def _build_rate_limiter(self) -> CompositeRateLimiter:
+        profile = RedisFixedWindowRateLimiter(
+            self.redis,
+            limit=self.settings.worker_request_limit_per_minute,
+            window_seconds=60,
+            key_prefix=f"repricer:rate-limit:{self.settings.worker_group}",
+        )
+        global_limiter = RedisFixedWindowRateLimiter(
+            self.redis,
+            limit=self.settings.global_request_limit_per_minute,
+            window_seconds=60,
+            key_prefix="repricer:rate-limit:global",
+        )
+        burst = RedisFixedWindowRateLimiter(
+            self.redis,
+            limit=self.settings.request_burst_limit,
+            window_seconds=1,
+            key_prefix=f"repricer:burst:{self.settings.worker_group}",
+        )
+        return CompositeRateLimiter(
+            profile_limiter=profile,
+            global_limiter=global_limiter,
+            burst_limiter=burst,
+            min_delay_ms=self.settings.request_min_delay_ms,
+            max_delay_ms=self.settings.request_max_delay_ms,
+            jitter_ms=self.settings.request_jitter_ms,
+            backoff_factor=self.settings.request_backoff_factor,
+        )
+
+    def _should_enter_safe_mode(self, error_kind: str) -> bool:
+        if not self.settings.safe_mode_enabled:
+            return False
+        if error_kind == "429" and self.settings.safe_mode_on_429:
+            return True
+        if error_kind == "403" and self.settings.safe_mode_on_403:
+            return True
+        return self.consecutive_errors >= self.settings.worker_safe_mode_error_threshold

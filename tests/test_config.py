@@ -50,8 +50,39 @@ def test_legacy_worker_group_aliases_are_kept() -> None:
 def test_worker_positions_can_be_overridden_from_env_values() -> None:
     settings = Settings(
         _env_file=None,
-        worker_fast_1_positions="500, 800, 1000",
+        proxy_fast_1_positions="500, 800, 1000",
         worker_group="fast_1",
     )
 
     assert settings.assigned_positions == (500, 800, 1000)
+
+
+def test_proxy_url_for_group_is_disabled_when_proxy_mode_is_disabled() -> None:
+    settings = Settings(
+        _env_file=None,
+        proxy_mode="disabled",
+        proxy_fast_1_url="http://login:password@1.1.1.1:8000",
+        worker_group="fast_1",
+    )
+
+    assert settings.proxy_url_for_group() is None
+
+
+def test_proxy_limits_must_not_exceed_global_limit() -> None:
+    with pytest.raises(ValueError):
+        Settings(
+            _env_file=None,
+            global_request_limit_per_minute=100,
+            proxy_fast_1_request_limit_per_minute=100,
+            proxy_fast_2_request_limit_per_minute=100,
+            proxy_slow_request_limit_per_minute=100,
+        )
+
+
+def test_proxy_positions_must_not_overlap() -> None:
+    with pytest.raises(ValueError):
+        Settings(
+            _env_file=None,
+            proxy_fast_1_positions="500,800",
+            proxy_fast_2_positions="800,1200",
+        )
