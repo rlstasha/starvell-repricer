@@ -11,6 +11,7 @@ from app.bot.formatters import (
 from app.core.config import Settings
 from app.db.models import (
     Position,
+    PositionScheduleState,
     PositionSettings,
     PositionState,
     PriceUpdateLog,
@@ -114,12 +115,12 @@ def test_worker_servers_show_new_fast_split_and_frequency() -> None:
     assert "📊 Прокси и лимиты" in text
     assert "🚀 Fast 1" in text
     assert "500 · 800 · 1000" in text
-    assert "~1.8 сек" in text
+    assert "Частота: 1.5–2.2 сек" in text
     assert "🚀 Fast 2" in text
     assert "400 · 1200 · 1700 · 2000" in text
-    assert "~2.4 сек" in text
+    assert "Частота: 2.0–3.0 сек" in text
     assert "🐢 Slow" in text
-    assert "~5.4 сек" in text
+    assert "Частота: 4.5–6.5 сек" in text
     assert "203.0.113.10" in text
     assert "Dry-run: включен" in text
 
@@ -169,7 +170,7 @@ def test_position_card_uses_proxy_group_frequency_and_ip() -> None:
 
     assert "🌐 Прокси-группа: Fast 1" in text
     assert "🌍 IP: 45.132.20.115" in text
-    assert "⏱ Частота проверки: ~1.8 сек" in text
+    assert "⏱ Частота: 1.5–2.2 сек" in text
     assert "High-позиция" not in text
     assert "Normal" not in text
 
@@ -189,6 +190,7 @@ def test_general_settings_are_proxy_aware() -> None:
 
     assert "🌐 Режим запросов: прокси" in text
     assert "🚦 Общий лимит: 300/мин" in text
+    assert "🧠 Account effective limit: 300/мин" in text
     assert "🚀 Fast 1" in text
     assert "500 · 800 · 1000" in text
     assert "High:" not in text
@@ -230,7 +232,8 @@ def test_proxy_status_does_not_show_high_normal_budget() -> None:
     )
 
     assert "🌐 Режим: прокси" in text
-    assert "🚦 Общий лимит: 300/мин" in text
+    assert "Proxy capacity:" in text
+    assert "300/мин" in text
     assert "🚀 Fast 2" in text
     assert "IP: 45.132.20.205" in text
     assert "Последняя позиция: 400 робуксов, ID 1999" in text
@@ -270,11 +273,11 @@ def test_proxy_status_shows_effective_limit_backoff_and_last_429() -> None:
         last_positions_by_amount={},
     )
 
-    assert "Configured limit: 100/мин" in text
-    assert "Effective limit: 80/мин" in text
+    assert "Лимит: 100/мин" in text
+    assert "Effective: 80/мин" in text
     assert "Backoff: активен" in text
     assert "Last 429: 15.05.2026 22:10" in text
-    assert "Частота: ~2.2 сек" in text
+    assert "Средний интервал: 2.5–4.0 сек" in text
 
 
 def test_position_card_uses_effective_proxy_frequency_after_backoff() -> None:
@@ -286,6 +289,7 @@ def test_position_card_uses_effective_proxy_frequency_after_backoff() -> None:
         assigned_positions=[500, 800, 1000],
         request_limit_per_minute=100,
         effective_request_limit_per_minute=50,
+        current_delay_seconds=3.6,
         last_seen_at=datetime.now(UTC),
         status="dry_run",
         backoff_active=True,
@@ -300,7 +304,33 @@ def test_position_card_uses_effective_proxy_frequency_after_backoff() -> None:
     )
 
     assert "🌐 Прокси-группа: Fast 1" in text
-    assert "⏱ Частота проверки: ~3.6 сек" in text
+    assert "⏱ Частота: 2.5–4.0 сек" in text
+    assert "• Текущая: 3.6 сек" in text
+
+
+def test_position_card_shows_market_activity_from_schedule_state() -> None:
+    settings = Settings(_env_file=None)
+    schedule_state = PositionScheduleState(
+        position_id=1,
+        position_amount=500,
+        lot_id="2000",
+        proxy_profile="fast_1",
+        base_interval_seconds=1.8,
+        current_interval_seconds=1.9,
+        change_score=0.9,
+        error_score=0.0,
+    )
+
+    text = format_position_card(
+        _position(500, "2000"),
+        proxy_mode="enabled",
+        group_infos=settings.worker_group_infos,
+        heartbeats=[],
+        schedule_states=[schedule_state],
+    )
+
+    assert "🧠 Активность рынка: высокая" in text
+    assert "• Текущая: 1.9 сек" in text
 
 
 def test_proxy_status_explains_safe_mode_without_technical_links() -> None:
@@ -315,6 +345,7 @@ def test_proxy_status_explains_safe_mode_without_technical_links() -> None:
         status="safe_mode_429",
         errors_429=4,
         consecutive_errors=4,
+        account_request_usage_per_minute=38,
         safe_mode=True,
         dry_run=True,
     )

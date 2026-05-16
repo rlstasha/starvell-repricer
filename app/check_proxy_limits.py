@@ -6,6 +6,9 @@ def main() -> int:
     settings = get_settings()
     lines: list[str] = [
         f"Global limit: {settings.global_request_limit_per_minute}/min",
+        f"Token limit mode: {'enabled' if settings.token_limit_mode else 'disabled'}",
+        f"Account effective limit: {settings.account_effective_limit_per_minute}/min",
+        f"Account minimum limit: {settings.account_min_limit_per_minute}/min",
         f"Proxy mode: {settings.proxy_mode}",
         "",
     ]
@@ -45,6 +48,14 @@ def _validate(settings, total_proxy_limit: int) -> list[str]:
     if total_proxy_limit > settings.global_request_limit_per_minute:
         errors.append(
             "sum of proxy limits is greater than GLOBAL_REQUEST_LIMIT_PER_MINUTE"
+        )
+    if settings.account_effective_limit_per_minute > settings.global_request_limit_per_minute:
+        errors.append(
+            "ACCOUNT_EFFECTIVE_LIMIT_PER_MINUTE is greater than GLOBAL_REQUEST_LIMIT_PER_MINUTE"
+        )
+    if settings.account_min_limit_per_minute > settings.account_effective_limit_per_minute:
+        errors.append(
+            "ACCOUNT_MIN_LIMIT_PER_MINUTE is greater than ACCOUNT_EFFECTIVE_LIMIT_PER_MINUTE"
         )
     groups = {info.name for info in settings.worker_group_infos}
     if groups != set(ALL_WORKER_GROUPS):

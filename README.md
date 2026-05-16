@@ -160,10 +160,24 @@ PROXY_SLOW_POSITIONS=40,80,200,2100,2500,3600,4500,10000,22500
 
 ```env
 GLOBAL_REQUEST_LIMIT_PER_MINUTE=300
+TOKEN_LIMIT_MODE=true
+ACCOUNT_EFFECTIVE_LIMIT_PER_MINUTE=300
 PROXY_FAST_1_REQUEST_LIMIT_PER_MINUTE=100
 PROXY_FAST_2_REQUEST_LIMIT_PER_MINUTE=100
 PROXY_SLOW_REQUEST_LIMIT_PER_MINUTE=100
 ```
+
+`TOKEN_LIMIT_MODE=true` включает общий динамический лимит аккаунта/сессии поверх
+трех proxy-профилей. Он стартует с `ACCOUNT_EFFECTIVE_LIMIT_PER_MINUTE=300`.
+Если Starvell возвращает `429`, `Too Many Requests` или `Retry-After`, общий
+effective limit снижается на `30/мин`, но не ниже `60/мин`. Если 10 минут нет
+новых `429`, лимит плавно растет на `10/мин` обратно до `300/мин`.
+
+Планировщик использует живые интервалы: Fast 1 обычно держится около
+`1.5-2.2 сек`, Fast 2 около `2.0-3.0 сек`, Slow около `4.5-6.5 сек`.
+Если конкретная позиция долго не меняется, интервал увеличивается; если рынок
+по позиции активен, проверка ускоряется. После `429` профиль временно переходит
+на более медленные интервалы и учитывает `Retry-After`.
 
 Проверки:
 

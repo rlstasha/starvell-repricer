@@ -14,6 +14,7 @@ from app.db.models import (
     FallbackBehavior,
     Position,
     PositionSettings,
+    PositionScheduleState,
     PositionState,
     PriceUpdateLog,
     PriorityLevel,
@@ -475,6 +476,16 @@ class WorkerHeartbeatRepository:
         assigned_positions: list[int],
         request_limit_per_minute: int,
         effective_request_limit_per_minute: int,
+        profile_request_usage_per_minute: int,
+        account_effective_limit_per_minute: int | None,
+        account_request_usage_per_minute: int,
+        account_backoff_active: bool,
+        account_last_429_at: datetime | None,
+        account_retry_after_until: datetime | None,
+        current_delay_seconds: float | None,
+        interval_min_seconds: float | None,
+        interval_max_seconds: float | None,
+        most_active_position_amount: int | None,
         status: str,
         errors_429: int,
         errors_403: int,
@@ -498,6 +509,16 @@ class WorkerHeartbeatRepository:
                     assigned_positions=assigned_positions,
                     request_limit_per_minute=request_limit_per_minute,
                     effective_request_limit_per_minute=effective_request_limit_per_minute,
+                    profile_request_usage_per_minute=profile_request_usage_per_minute,
+                    account_effective_limit_per_minute=account_effective_limit_per_minute,
+                    account_request_usage_per_minute=account_request_usage_per_minute,
+                    account_backoff_active=account_backoff_active,
+                    account_last_429_at=account_last_429_at,
+                    account_retry_after_until=account_retry_after_until,
+                    current_delay_seconds=current_delay_seconds,
+                    interval_min_seconds=interval_min_seconds,
+                    interval_max_seconds=interval_max_seconds,
+                    most_active_position_amount=most_active_position_amount,
                     last_seen_at=now,
                     status=status,
                     errors_429=errors_429,
@@ -517,6 +538,16 @@ class WorkerHeartbeatRepository:
         heartbeat.assigned_positions = assigned_positions
         heartbeat.request_limit_per_minute = request_limit_per_minute
         heartbeat.effective_request_limit_per_minute = effective_request_limit_per_minute
+        heartbeat.profile_request_usage_per_minute = profile_request_usage_per_minute
+        heartbeat.account_effective_limit_per_minute = account_effective_limit_per_minute
+        heartbeat.account_request_usage_per_minute = account_request_usage_per_minute
+        heartbeat.account_backoff_active = account_backoff_active
+        heartbeat.account_last_429_at = account_last_429_at
+        heartbeat.account_retry_after_until = account_retry_after_until
+        heartbeat.current_delay_seconds = current_delay_seconds
+        heartbeat.interval_min_seconds = interval_min_seconds
+        heartbeat.interval_max_seconds = interval_max_seconds
+        heartbeat.most_active_position_amount = most_active_position_amount
         heartbeat.last_seen_at = now
         heartbeat.status = status
         heartbeat.errors_429 = errors_429
@@ -533,3 +564,68 @@ class WorkerHeartbeatRepository:
             select(WorkerHeartbeat).order_by(WorkerHeartbeat.worker_group.asc())
         )
         return list(result)
+
+
+class PositionScheduleStateRepository:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def list_all(self) -> list[PositionScheduleState]:
+        result = await self.session.scalars(
+            select(PositionScheduleState).order_by(PositionScheduleState.position_amount.asc())
+        )
+        return list(result)
+
+    async def get_by_position_id(self, position_id: int) -> PositionScheduleState | None:
+        return await self.session.scalar(
+            select(PositionScheduleState).where(PositionScheduleState.position_id == position_id)
+        )
+
+    async def upsert(
+        self,
+        *,
+        position: Position,
+        proxy_profile: str,
+        base_interval_seconds: float,
+        current_interval_seconds: float,
+        last_checked_at: datetime | None,
+        last_competitor_price: Decimal | None,
+        last_own_price: Decimal | None,
+        change_score: float,
+        error_score: float,
+        last_429_at: datetime | None,
+    ) -> None:
+        now = datetime.now(UTC)
+        state = await self.get_by_position_id(position.id)
+        if state is None:
+            self.session.add(
+                PositionScheduleState(
+                    position_id=position.id,
+                    position_amount=position.robux_amount,
+                    lot_id=position.lot_id,
+                    proxy_profile=proxy_profile,
+                    base_interval_seconds=base_interval_seconds,
+                    current_interval_seconds=current_interval_seconds,
+                    last_checked_at=last_checked_at,
+                    last_competitor_price=last_competitor_price,
+                    last_own_price=last_own_price,
+                    change_score=change_score,
+                    error_score=error_score,
+                    last_429_at=last_429_at,
+                    updated_at=now,
+                )
+            )
+            return
+
+        state.position_amount = position.robux_amount
+        state.lot_id = position.lot_id
+        state.proxy_profile = proxy_profile
+        state.base_interval_seconds = base_interval_seconds
+        state.current_interval_seconds = current_interval_seconds
+        state.last_checked_at = last_checked_at
+        state.last_competitor_price = last_competitor_price
+        state.last_own_price = last_own_price
+        state.change_score = change_score
+        state.error_score = error_score
+        state.last_429_at = last_429_at
+        state.updated_at = now

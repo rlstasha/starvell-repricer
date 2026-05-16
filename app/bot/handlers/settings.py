@@ -19,6 +19,7 @@ from app.db.models import UpdateStatus
 from app.db.repositories import (
     AppSettingsRepository,
     PositionRepository,
+    PositionScheduleStateRepository,
     WorkerHeartbeatRepository,
     WorkerStateRepository,
 )
@@ -204,6 +205,7 @@ async def show_recent_logs(
         repo = PositionRepository(session)
         logs = await repo.list_latest_price_logs_by_position()
         heartbeats = await WorkerHeartbeatRepository(session).list_all()
+        schedule_states = await PositionScheduleStateRepository(session).list_all()
 
     await safe_edit_text(
         callback,
@@ -212,6 +214,7 @@ async def show_recent_logs(
             proxy_mode=settings.proxy_mode,
             group_infos=settings.worker_group_infos,
             heartbeats=heartbeats,
+            schedule_states=schedule_states,
         ),
         reply_markup=back_to_main_keyboard(),
     )

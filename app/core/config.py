@@ -70,6 +70,12 @@ class Settings(BaseSettings):
 
     request_limit_per_minute: int = Field(default=100, ge=1)
     global_request_limit_per_minute: int = Field(default=300, ge=1)
+    token_limit_mode: bool = True
+    account_effective_limit_per_minute: int = Field(default=300, ge=1)
+    account_min_limit_per_minute: int = Field(default=60, ge=1)
+    account_limit_decrease_step_per_minute: int = Field(default=30, ge=1)
+    account_limit_ramp_step_per_minute: int = Field(default=10, ge=1)
+    account_limit_ramp_idle_seconds: float = Field(default=600.0, ge=1)
     worker_fast_1_request_limit_per_minute: int = Field(default=100, ge=1)
     worker_fast_2_request_limit_per_minute: int = Field(default=100, ge=1)
     worker_slow_request_limit_per_minute: int = Field(default=100, ge=1)
@@ -160,6 +166,14 @@ class Settings(BaseSettings):
             raise ValueError("HIGH_PRIORITY_PERCENT and NORMAL_PRIORITY_PERCENT must sum to 100")
         if self.request_min_delay_ms > self.request_max_delay_ms:
             raise ValueError("REQUEST_MIN_DELAY_MS must be <= REQUEST_MAX_DELAY_MS")
+        if self.account_min_limit_per_minute > self.account_effective_limit_per_minute:
+            raise ValueError(
+                "ACCOUNT_MIN_LIMIT_PER_MINUTE must be <= ACCOUNT_EFFECTIVE_LIMIT_PER_MINUTE"
+            )
+        if self.account_effective_limit_per_minute > self.global_request_limit_per_minute:
+            raise ValueError(
+                "ACCOUNT_EFFECTIVE_LIMIT_PER_MINUTE must be <= GLOBAL_REQUEST_LIMIT_PER_MINUTE"
+            )
         proxy_limit_total = sum(
             info.request_limit_per_minute
             for info in self.worker_group_infos

@@ -64,6 +64,12 @@ PROXY_FAST_2_POSITIONS=400,1200,1700,2000
 PROXY_SLOW_POSITIONS=40,80,200,2100,2500,3600,4500,10000,22500
 
 GLOBAL_REQUEST_LIMIT_PER_MINUTE=300
+TOKEN_LIMIT_MODE=true
+ACCOUNT_EFFECTIVE_LIMIT_PER_MINUTE=300
+ACCOUNT_MIN_LIMIT_PER_MINUTE=60
+ACCOUNT_LIMIT_DECREASE_STEP_PER_MINUTE=30
+ACCOUNT_LIMIT_RAMP_STEP_PER_MINUTE=10
+ACCOUNT_LIMIT_RAMP_IDLE_SECONDS=600
 PROXY_FAST_1_REQUEST_LIMIT_PER_MINUTE=100
 PROXY_FAST_2_REQUEST_LIMIT_PER_MINUTE=100
 PROXY_SLOW_REQUEST_LIMIT_PER_MINUTE=100
@@ -154,6 +160,16 @@ docker compose run --rm worker python -m app.check_proxy_limits
 ```
 
 Если сумма proxy-лимитов больше `GLOBAL_REQUEST_LIMIT_PER_MINUTE`, приложение не стартует и команда покажет ошибку.
+
+`TOKEN_LIMIT_MODE=true` добавляет общий лимит аккаунта/сессии поверх трех proxy.
+Он не фиксируется на `60/мин`: стартует с `300/мин`, при `429` снижается шагом
+`30/мин` до безопасного минимума `60/мин`, а после 10 минут без новых `429`
+растет обратно на `10/мин`. Worker также учитывает `Retry-After` и временно
+замедляет только тот proxy profile, который получил ограничение.
+
+Интервалы проверок живые: Fast 1 обычно `1.5-2.2 сек`, Fast 2 `2.0-3.0 сек`,
+Slow `4.5-6.5 сек`. Если цена конкурента по позиции часто меняется, эта
+позиция проверяется чаще; если изменений нет, интервал постепенно растет.
 
 ## Как отключить proxy
 

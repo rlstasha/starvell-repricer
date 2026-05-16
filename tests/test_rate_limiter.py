@@ -4,6 +4,7 @@ from app.repricer.rate_limiter import (
     CompositeRateLimiter,
     InMemoryFixedWindowRateLimiter,
     adaptive_backoff_seconds,
+    retry_after_delay_seconds,
 )
 
 
@@ -51,3 +52,14 @@ async def test_composite_limiter_resets_backoff_after_success() -> None:
     limiter.reset_backoff()
     await limiter.acquire()
     assert slept == [2.0]
+
+
+def test_retry_after_header_seconds_are_parsed() -> None:
+    assert retry_after_delay_seconds({"Retry-After": "8"}, now=100.0) == 8.0
+
+
+def test_x_rate_limit_reset_is_used_when_remaining_is_zero() -> None:
+    assert retry_after_delay_seconds(
+        {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "130"},
+        now=100.0,
+    ) == 30.0

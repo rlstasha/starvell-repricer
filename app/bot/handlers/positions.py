@@ -17,7 +17,11 @@ from app.bot.ui import (
 )
 from app.core.config import Settings
 from app.db.models import Position
-from app.db.repositories import PositionRepository, WorkerHeartbeatRepository
+from app.db.repositories import (
+    PositionRepository,
+    PositionScheduleStateRepository,
+    WorkerHeartbeatRepository,
+)
 from app.market.schemas import MarketOffer
 from app.repricer.price_strategy import PriceCalculationSettings, UndercutByStepStrategy
 
@@ -169,12 +173,13 @@ async def save_position_value(
         position = await repo.get_by_amount(amount)
         counts = await repo.count_by_priority(enabled_only=True)
         heartbeats = await WorkerHeartbeatRepository(session).list_all()
+        schedule_states = await PositionScheduleStateRepository(session).list_all()
 
     await cleanup_pending_prompt(state, message.bot)
     await state.clear()
     await message.answer(
         "Настройка сохранена.\n\n"
-        + _format_position_card(position, settings, counts, heartbeats),
+        + _format_position_card(position, settings, counts, heartbeats, schedule_states),
         reply_markup=position_card_keyboard(position),
     )
 
@@ -190,6 +195,7 @@ async def _show_card(
         position = await repo.get_by_amount(amount)
         counts = await repo.count_by_priority(enabled_only=True)
         heartbeats = await WorkerHeartbeatRepository(session).list_all()
+        schedule_states = await PositionScheduleStateRepository(session).list_all()
     if position is None:
         await safe_edit_text(
             callback,
@@ -199,7 +205,7 @@ async def _show_card(
         return
     await safe_edit_text(
         callback,
-        _format_position_card(position, settings, counts, heartbeats),
+        _format_position_card(position, settings, counts, heartbeats, schedule_states),
         reply_markup=position_card_keyboard(position),
     )
 
@@ -215,6 +221,7 @@ async def _show_competitors(
         position = await repo.get_by_amount(amount)
         competitors = await repo.list_recent_competitors(position) if position else []
         heartbeats = await WorkerHeartbeatRepository(session).list_all()
+        schedule_states = await PositionScheduleStateRepository(session).list_all()
     if position is None:
         await safe_edit_text(
             callback,
@@ -230,6 +237,7 @@ async def _show_competitors(
             proxy_mode=settings.proxy_mode,
             group_infos=settings.worker_group_infos,
             heartbeats=heartbeats,
+            schedule_states=schedule_states,
         ),
         reply_markup=position_card_keyboard(position),
     )
@@ -246,6 +254,7 @@ async def _show_price_test(
         position = await repo.get_by_amount(amount)
         competitors = await repo.list_recent_active_competitors(position) if position else []
         heartbeats = await WorkerHeartbeatRepository(session).list_all()
+        schedule_states = await PositionScheduleStateRepository(session).list_all()
 
     if position is None:
         await safe_edit_text(
@@ -288,6 +297,7 @@ async def _show_price_test(
             proxy_mode=settings.proxy_mode,
             group_infos=settings.worker_group_infos,
             heartbeats=heartbeats,
+            schedule_states=schedule_states,
         ),
         reply_markup=position_card_keyboard(position),
     )
@@ -323,6 +333,7 @@ def _format_position_card(
     settings: Settings,
     counts: dict[str, int],
     heartbeats,
+    schedule_states,
 ) -> str:
     return format_position_card(
         position,
@@ -334,4 +345,5 @@ def _format_position_card(
         proxy_mode=settings.proxy_mode,
         group_infos=settings.worker_group_infos,
         heartbeats=heartbeats,
+        schedule_states=schedule_states,
     )

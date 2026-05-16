@@ -86,3 +86,11 @@ def test_proxy_positions_must_not_overlap() -> None:
             proxy_fast_1_positions="500,800",
             proxy_fast_2_positions="800,1200",
         )
+
+
+def test_account_effective_limit_defaults_to_full_proxy_capacity() -> None:
+    settings = Settings(_env_file=None)
+
+    assert settings.token_limit_mode is True
+    assert settings.account_effective_limit_per_minute == 300
+    assert settings.account_min_limit_per_minute == 60

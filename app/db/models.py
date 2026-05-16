@@ -8,6 +8,7 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     ForeignKey,
+    Float,
     Integer,
     JSON,
     Numeric,
@@ -195,6 +196,16 @@ class WorkerHeartbeat(Base):
     assigned_positions: Mapped[list[int]] = mapped_column(JSON, default=list, nullable=False)
     request_limit_per_minute: Mapped[int] = mapped_column(Integer, nullable=False)
     effective_request_limit_per_minute: Mapped[int] = mapped_column(Integer, nullable=False)
+    profile_request_usage_per_minute: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    account_effective_limit_per_minute: Mapped[int | None] = mapped_column(Integer)
+    account_request_usage_per_minute: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    account_backoff_active: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    account_last_429_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    account_retry_after_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    current_delay_seconds: Mapped[float | None] = mapped_column(Float)
+    interval_min_seconds: Mapped[float | None] = mapped_column(Float)
+    interval_max_seconds: Mapped[float | None] = mapped_column(Float)
+    most_active_position_amount: Mapped[int | None] = mapped_column(Integer)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     errors_429: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
@@ -205,6 +216,31 @@ class WorkerHeartbeat(Base):
     last_429_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     safe_mode: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     dry_run: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+        nullable=False,
+    )
+
+
+class PositionScheduleState(Base):
+    __tablename__ = "position_schedule_state"
+    __table_args__ = (UniqueConstraint("position_id", name="uq_position_schedule_state_position"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    position_id: Mapped[int] = mapped_column(ForeignKey("positions.id", ondelete="CASCADE"), nullable=False)
+    position_amount: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    lot_id: Mapped[str | None] = mapped_column(String(64))
+    proxy_profile: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    base_interval_seconds: Mapped[float] = mapped_column(Float, nullable=False)
+    current_interval_seconds: Mapped[float] = mapped_column(Float, nullable=False)
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_competitor_price: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    last_own_price: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    change_score: Mapped[float] = mapped_column(Float, default=0.5, nullable=False)
+    error_score: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    last_429_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(UTC),

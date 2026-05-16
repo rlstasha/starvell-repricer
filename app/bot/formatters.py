@@ -5,12 +5,14 @@ from zoneinfo import ZoneInfo
 from app.db.models import (
     CompetitorSnapshot,
     Position,
+    PositionScheduleState,
     PriceUpdateLog,
     PriorityLevel,
     UpdateStatus,
     WorkerHeartbeat,
     WorkerState,
 )
+from app.repricer.adaptive_scheduler import display_interval_range, market_activity_label
 from app.repricer.worker_groups import WorkerGroupInfo
 
 
@@ -163,6 +165,7 @@ def format_position_card(
     proxy_mode: str = "disabled",
     group_infos: list[WorkerGroupInfo] | None = None,
     heartbeats: list[WorkerHeartbeat] | None = None,
+    schedule_states: list[PositionScheduleState] | None = None,
 ) -> str:
     settings = position.settings
     state = position.state
@@ -176,6 +179,7 @@ def format_position_card(
         group_label="Прокси-группа",
         include_ip=True,
         include_frequency=True,
+        schedule_states=schedule_states,
     )
 
     lines = [
@@ -245,6 +249,7 @@ def format_competitors(
     proxy_mode: str = "disabled",
     group_infos: list[WorkerGroupInfo] | None = None,
     heartbeats: list[WorkerHeartbeat] | None = None,
+    schedule_states: list[PositionScheduleState] | None = None,
 ) -> str:
     lines = [
         SEPARATOR,
@@ -260,6 +265,7 @@ def format_competitors(
         group_label="Группа",
         include_ip=False,
         include_frequency=True,
+        schedule_states=schedule_states,
     )
     if proxy_lines:
         lines.extend(proxy_lines)
@@ -306,6 +312,7 @@ def format_price_test(
     proxy_mode: str = "disabled",
     group_infos: list[WorkerGroupInfo] | None = None,
     heartbeats: list[WorkerHeartbeat] | None = None,
+    schedule_states: list[PositionScheduleState] | None = None,
 ) -> str:
     action = (
         "цена будет изменена"
@@ -326,6 +333,7 @@ def format_price_test(
         group_label="Группа",
         include_ip=False,
         include_frequency=True,
+        schedule_states=schedule_states,
     )
     if proxy_lines:
         lines.extend(proxy_lines)
@@ -375,12 +383,15 @@ def format_general_settings(
             f"🧪 Dry-run: {mode}",
             "🌐 Режим запросов: прокси",
             f"🚦 Общий лимит: {global_limit or request_limit}/мин",
+            f"🧠 Account effective limit: {_account_effective_limit(heartbeats or [], global_limit or request_limit)}/мин",
+            f"📉 Backoff: {'активен' if _account_backoff_active(heartbeats or [], _account_effective_limit(heartbeats or [], global_limit or request_limit), global_limit or request_limit) else 'нет'}",
             "",
         ]
         for info in group_infos:
             heartbeat = heartbeat_by_group.get(info.name) or heartbeat_by_group.get("all")
             configured_limit = _configured_limit(info, heartbeat)
             effective_limit = _effective_limit(info, heartbeat)
+            interval_min, interval_max = _heartbeat_interval_range(info, heartbeat)
             lines.extend(
                 [
                     f"{info.icon} {info.label}",
@@ -389,7 +400,8 @@ def format_general_settings(
                     f"• Backoff: {_backoff_text(info, heartbeat)}",
                     f"• Last 429: {_last_429_text(heartbeat)}",
                     f"• Позиции: {_positions_inline(info.positions)}",
-                    f"• Частота: {_server_frequency(effective_limit, len(info.positions))}",
+                    f"• Частота: {_seconds_range(interval_min, interval_max)}",
+                    f"• Текущая: {_seconds_value(getattr(heartbeat, 'current_delay_seconds', None))}",
                     "",
                 ]
             )
@@ -540,6 +552,11 @@ def format_proxy_status(
         if latest_state and latest_state.last_position_amount
         else None
     )
+    proxy_capacity = sum(info.request_limit_per_minute for info in group_infos)
+    account_effective_limit = _account_effective_limit(heartbeats, global_limit)
+    account_usage = _account_usage(heartbeats, request_usage)
+    account_backoff = _account_backoff_active(heartbeats, account_effective_limit, global_limit)
+    account_last_429 = _account_last_429(heartbeats)
 
     lines = [
         SEPARATOR,
@@ -549,9 +566,23 @@ def format_proxy_status(
         f"🧪 Dry-run: {'включен' if dry_run else 'выключен'}",
         "",
         "🌐 Режим: прокси",
-        f"🚦 Общий лимит: {global_limit}/мин",
-        f"📡 Запросы: {request_usage}/{global_limit} за текущую минуту",
         "",
+        "🚦 Proxy capacity:",
+        f"{proxy_capacity}/мин",
+        "",
+        "🧠 Account effective limit:",
+        f"{account_effective_limit}/мин",
+        "",
+        "📡 Текущая нагрузка:",
+        f"{account_usage}/{account_effective_limit}",
+        "",
+        "📉 Backoff:",
+        "активен" if account_backoff else "нет",
+        "",
+        "Last 429:",
+        dt(account_last_429),
+        "",
+        "📊 Умный планировщик",
     ]
 
     for info in group_infos:
@@ -564,15 +595,19 @@ def format_proxy_status(
         )
         configured_limit = _configured_limit(info, heartbeat)
         effective_limit = _effective_limit(info, heartbeat)
+        interval_min, interval_max = _heartbeat_interval_range(info, heartbeat)
         lines.extend(
             [
                 f"{info.icon} {info.label}",
                 f"• Позиции: {_positions_inline(info.positions)}",
-                f"• Configured limit: {configured_limit}/мин",
-                f"• Effective limit: {effective_limit}/мин",
+                f"• Лимит: {configured_limit}/мин",
+                f"• Effective: {effective_limit}/мин",
+                f"• Нагрузка: {_profile_usage(heartbeat)}/{configured_limit}",
+                f"• Средний интервал: {_seconds_range(interval_min, interval_max)}",
+                f"• Текущая: {_seconds_value(getattr(heartbeat, 'current_delay_seconds', None))}",
+                f"• Самая активная позиция: {getattr(heartbeat, 'most_active_position_amount', None) or '—'}",
                 f"• Backoff: {_backoff_text(info, heartbeat)}",
                 f"• Last 429: {_last_429_text(heartbeat)}",
-                f"• Частота: {_server_frequency(effective_limit, len(info.positions))}",
                 f"• IP: {heartbeat.public_ip if heartbeat and heartbeat.public_ip else 'нет данных'}",
                 f"• Статус: {_server_status(heartbeat, is_active)}",
             ]
@@ -581,7 +616,7 @@ def format_proxy_status(
             lines.extend(
                 [
                     f"• Причина: {_safe_mode_reason(heartbeat)}",
-                    f"• Запросов: {request_usage}/{global_limit}",
+                    f"• Запросов: {account_usage}/{account_effective_limit}",
                     f"• Следующая попытка: {_safe_mode_retry_text(heartbeat)}",
                 ]
             )
@@ -649,10 +684,19 @@ def format_proxy_profiles(
     now = datetime.now(UTC)
     heartbeat_by_group = {heartbeat.worker_group: heartbeat for heartbeat in heartbeats}
     safe_mode = any(heartbeat.safe_mode for heartbeat in heartbeats)
+    proxy_capacity = sum(info.request_limit_per_minute for info in group_infos)
+    account_effective_limit = _account_effective_limit(heartbeats, global_limit)
+    account_usage = _account_usage(heartbeats, 0)
     lines = [
         SEPARATOR,
         "📊 Прокси и лимиты",
         f"Режим: {'прокси' if _use_proxy_ui(proxy_mode) else 'напрямую'}",
+        "",
+        f"Proxy capacity: {proxy_capacity}/мин",
+        f"Account effective limit: {account_effective_limit}/мин",
+        f"Текущая нагрузка: {account_usage}/{account_effective_limit}",
+        f"Backoff: {'активен' if _account_backoff_active(heartbeats, account_effective_limit, global_limit) else 'нет'}",
+        f"Last 429: {dt(_account_last_429(heartbeats))}",
         "",
     ]
 
@@ -664,13 +708,16 @@ def format_proxy_profiles(
         )
         configured_limit = _configured_limit(info, heartbeat)
         effective_limit = _effective_limit(info, heartbeat)
+        interval_min, interval_max = _heartbeat_interval_range(info, heartbeat)
         lines.extend(
             [
                 f"{info.icon} {info.label}",
                 _positions_inline(info.positions),
                 f"Configured limit: {configured_limit}/мин",
-                f"Effective limit: {effective_limit}/мин · "
-                f"{_server_frequency(effective_limit, len(info.positions))}",
+                f"Effective limit: {effective_limit}/мин",
+                f"Нагрузка: {_profile_usage(heartbeat)}/{configured_limit}",
+                f"Частота: {_seconds_range(interval_min, interval_max)}",
+                f"Текущая: {_seconds_value(getattr(heartbeat, 'current_delay_seconds', None))}",
                 f"Backoff: {_backoff_text(info, heartbeat)}",
                 f"Last 429: {_last_429_text(heartbeat)}",
                 f"IP: {heartbeat.public_ip if heartbeat and heartbeat.public_ip else 'нет данных'}",
@@ -712,6 +759,7 @@ def format_logs(
     proxy_mode: str = "disabled",
     group_infos: list[WorkerGroupInfo] | None = None,
     heartbeats: list[WorkerHeartbeat] | None = None,
+    schedule_states: list[PositionScheduleState] | None = None,
 ) -> str:
     if not logs:
         return "Логов действий пока нет."
@@ -732,6 +780,7 @@ def format_logs(
             group_label="Группа",
             include_ip=False,
             include_frequency=False,
+            schedule_states=schedule_states,
         )
         lines.extend(proxy_lines)
 
@@ -875,6 +924,70 @@ def _server_frequency(request_limit: int, position_count: int) -> str:
     return f"~{_duration(seconds)}"
 
 
+def _seconds_value(value: float | Decimal | None) -> str:
+    if value is None:
+        return "—"
+    return f"{float(value):.1f} сек"
+
+
+def _seconds_range(min_seconds: float | None, max_seconds: float | None) -> str:
+    if min_seconds is None or max_seconds is None:
+        return "динамическая"
+    return f"{float(min_seconds):.1f}–{float(max_seconds):.1f} сек"
+
+
+def _profile_usage(heartbeat: WorkerHeartbeat | None) -> int:
+    return int(getattr(heartbeat, "profile_request_usage_per_minute", 0) or 0)
+
+
+def _account_effective_limit(heartbeats: list[WorkerHeartbeat], default: int) -> int:
+    values = [
+        int(value)
+        for heartbeat in heartbeats
+        if (value := getattr(heartbeat, "account_effective_limit_per_minute", None))
+    ]
+    return min(values) if values else default
+
+
+def _account_usage(heartbeats: list[WorkerHeartbeat], fallback: int) -> int:
+    values = [
+        int(getattr(heartbeat, "account_request_usage_per_minute", 0) or 0)
+        for heartbeat in heartbeats
+    ]
+    return max(values) if values else fallback
+
+
+def _account_backoff_active(
+    heartbeats: list[WorkerHeartbeat],
+    effective_limit: int,
+    configured_limit: int,
+) -> bool:
+    return bool(
+        effective_limit < configured_limit
+        or any(getattr(heartbeat, "account_backoff_active", False) for heartbeat in heartbeats)
+    )
+
+
+def _account_last_429(heartbeats: list[WorkerHeartbeat]) -> datetime | None:
+    values = [
+        value
+        for heartbeat in heartbeats
+        if (value := getattr(heartbeat, "account_last_429_at", None)) is not None
+    ]
+    return max(values) if values else None
+
+
+def _heartbeat_interval_range(
+    info: WorkerGroupInfo,
+    heartbeat: WorkerHeartbeat | None,
+) -> tuple[float | None, float | None]:
+    min_value = getattr(heartbeat, "interval_min_seconds", None)
+    max_value = getattr(heartbeat, "interval_max_seconds", None)
+    if min_value is not None and max_value is not None:
+        return float(min_value), float(max_value)
+    return display_interval_range(info.name, backoff_active=_backoff_active(info, heartbeat))
+
+
 def _configured_limit(
     info: WorkerGroupInfo,
     heartbeat: WorkerHeartbeat | None,
@@ -990,6 +1103,7 @@ def _position_proxy_context_lines(
     *,
     group_infos: list[WorkerGroupInfo] | None,
     heartbeats: list[WorkerHeartbeat] | None,
+    schedule_states: list[PositionScheduleState] | None,
     proxy_mode: str,
     group_label: str,
     include_ip: bool,
@@ -1002,18 +1116,34 @@ def _position_proxy_context_lines(
         return ["🌐 Группа: не назначена"]
 
     heartbeat = _heartbeat_for_group(info, heartbeats)
+    schedule_state = _schedule_for_position(schedule_states, position.robux_amount)
     lines = [f"🌐 {group_label}: {info.label}"]
     if include_ip:
         lines.append(
             f"🌍 IP: {heartbeat.public_ip if heartbeat and heartbeat.public_ip else 'нет данных'}"
         )
     if include_frequency:
-        effective_limit = _effective_limit(info, heartbeat)
-        lines.append(
-            "⏱ Частота проверки: "
-            f"{_server_frequency(effective_limit, len(info.positions))}"
-        )
+        interval_min, interval_max = _heartbeat_interval_range(info, heartbeat)
+        if schedule_state is not None:
+            lines.append(f"🧠 Активность рынка: {market_activity_label(schedule_state.change_score)}")
+            lines.append(f"⏱ Частота: {_seconds_range(interval_min, interval_max)}")
+            lines.append(f"• Текущая: {_seconds_value(schedule_state.current_interval_seconds)}")
+        else:
+            lines.append(f"⏱ Частота: {_seconds_range(interval_min, interval_max)}")
+            lines.append(f"• Текущая: {_seconds_value(getattr(heartbeat, 'current_delay_seconds', None))}")
     return lines
+
+
+def _schedule_for_position(
+    schedule_states: list[PositionScheduleState] | None,
+    amount: int,
+) -> PositionScheduleState | None:
+    if not schedule_states:
+        return None
+    for state in schedule_states:
+        if state.position_amount == amount:
+            return state
+    return None
 
 
 def _latest_worker_state(worker_states: list[WorkerState]) -> WorkerState | None:

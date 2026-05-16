@@ -194,7 +194,9 @@ class StarvellClient:
                     continue
                 raise
 
-            if response.status_code < 400 and hasattr(self.rate_limiter, "reset_backoff"):
+            if hasattr(self.rate_limiter, "record_response"):
+                await self.rate_limiter.record_response(response.status_code, response.headers)
+            elif response.status_code < 400 and hasattr(self.rate_limiter, "reset_backoff"):
                 self.rate_limiter.reset_backoff()
             elif response.status_code in {403, 429} and hasattr(self.rate_limiter, "apply_backoff"):
                 self.rate_limiter.apply_backoff(_error_kind_from_status(response.status_code))
