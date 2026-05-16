@@ -2,11 +2,18 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 from app.bot.formatters import (
+    format_errors_screen,
     format_general_settings,
+    format_limits_screen,
     format_logs,
+    format_main_menu,
     format_position_card,
     format_price_change_toggle_result,
-    format_proxy_status,
+    format_price_write_screen,
+    format_proxy_screen,
+    format_scheduler_screen,
+    format_status_overview,
+    format_technical_status,
     format_worker_servers,
 )
 from app.core.config import Settings
@@ -193,7 +200,7 @@ def test_general_settings_are_proxy_aware() -> None:
 
     assert "🌐 Режим запросов: прокси" in text
     assert "🚦 Общий лимит: 300/мин" in text
-    assert "🧠 Account effective limit: 300/мин" in text
+    assert "🧠 Эффективный лимит аккаунта: 300/мин" in text
     assert "💰 Изменение цен:" in text
     assert "❌ только анализ" in text
     assert "🚀 Fast 1" in text
@@ -202,7 +209,41 @@ def test_general_settings_are_proxy_aware() -> None:
     assert "Normal:" not in text
 
 
-def test_proxy_status_does_not_show_high_normal_budget() -> None:
+def test_main_menu_is_compact_and_russian() -> None:
+    settings = Settings(_env_file=None)
+    heartbeat = WorkerHeartbeat(
+        worker_group="fast_1",
+        hostname="server",
+        public_ip="45.132.20.115",
+        assigned_positions=[500, 800, 1000],
+        request_limit_per_minute=100,
+        account_request_usage_per_minute=258,
+        last_seen_at=datetime.now(UTC),
+        status="success",
+        dry_run=False,
+    )
+
+    text = format_main_menu(
+        dry_run=False,
+        real_price_writes_enabled=True,
+        price_write_endpoint_configured=True,
+        proxy_mode="enabled",
+        heartbeats=[heartbeat],
+        request_usage=258,
+        global_limit=settings.global_request_limit_per_minute,
+        group_infos=settings.worker_group_infos,
+    )
+
+    assert "🤖 Starvell Repricer" in text
+    assert "💰 Изменение цен:\n✅ активно" in text
+    assert "🤖 Worker:\n✅ активен" in text
+    assert "🌐 Прокси:\n✅ 1/3" in text
+    assert "🚦 Нагрузка:\n258/300" in text
+    assert "📉 Замедление:\nнет" in text
+    assert "Proxy capacity" not in text
+
+
+def test_status_overview_is_short_and_proxy_aware() -> None:
     settings = Settings(_env_file=None)
     heartbeat = WorkerHeartbeat(
         worker_group="fast_2",
@@ -210,45 +251,172 @@ def test_proxy_status_does_not_show_high_normal_budget() -> None:
         public_ip="45.132.20.205",
         assigned_positions=[400, 1200, 1700, 2000],
         request_limit_per_minute=100,
+        account_request_usage_per_minute=258,
         last_seen_at=datetime.now(UTC),
-        status="dry_run",
-        dry_run=True,
+        status="success",
+        dry_run=False,
+    )
+    latest_update = PriceUpdateLog(
+        position_id=1,
+        status=UpdateStatus.SUCCESS.value,
+        new_price=Decimal("580.70"),
+        created_at=datetime(2026, 5, 16, 23, 21, tzinfo=UTC),
+    )
+
+    text = format_status_overview(
+        worker_state=WorkerState(
+            name="repricer:fast_2",
+            last_heartbeat_at=datetime.now(UTC),
+            last_cycle_at=datetime(2026, 5, 15, 19, 10, tzinfo=UTC),
+            last_position_amount=400,
+            last_status="success",
+            last_error=None,
+        ),
+        heartbeats=[heartbeat],
+        dry_run=False,
+        real_price_writes_enabled=True,
+        price_write_endpoint_configured=True,
+        latest_price_update=(latest_update, _position(800, "2002")),
+        request_usage=258,
+        global_limit=settings.global_request_limit_per_minute,
+        group_infos=settings.worker_group_infos,
+    )
+
+    assert "📊 Статус репрайсера" in text
+    assert "🤖 Worker:\n✅ активен" in text
+    assert "💰 Изменение цен:\n✅ активно" in text
+    assert "🌐 Прокси:\n✅ активны (1/3)" in text
+    assert "🚦 Нагрузка:\n258/300" in text
+    assert "📉 Замедление:\nнет" in text
+    assert "800 робуксов" in text
+    assert "580.70 ₽" in text
+    assert "High:" not in text
+    assert "Proxy capacity" not in text
+
+
+def test_proxy_screen_contains_only_proxy_health() -> None:
+    settings = Settings(_env_file=None)
+    heartbeat = WorkerHeartbeat(
+        worker_group="fast_1",
+        hostname="server",
+        public_ip="45.132.20.115",
+        assigned_positions=[500, 800, 1000],
+        request_limit_per_minute=100,
+        last_seen_at=datetime.now(UTC),
+        status="success",
+        dry_run=False,
+    )
+
+    text = format_proxy_screen(
+        group_infos=settings.worker_group_infos,
+        heartbeats=[heartbeat],
+    )
+
+    assert "🌐 Прокси" in text
+    assert "🚀 Fast 1" in text
+    assert "IP: 45.132.20.115" in text
+    assert "500 · 800 · 1000" in text
+    assert "Статус:\n✅ активен" in text
+    assert "Пропускная способность" not in text
+    assert "Нагрузка" not in text
+
+
+def test_limits_screen_uses_russian_labels() -> None:
+    settings = Settings(_env_file=None)
+    heartbeat = WorkerHeartbeat(
+        worker_group="fast_1",
+        hostname="server",
+        public_ip="45.132.20.115",
+        assigned_positions=[500, 800, 1000],
+        request_limit_per_minute=100,
+        profile_request_usage_per_minute=82,
+        account_request_usage_per_minute=258,
+        account_effective_limit_per_minute=300,
+        last_seen_at=datetime.now(UTC),
+        status="success",
+        dry_run=False,
+    )
+
+    text = format_limits_screen(
+        group_infos=settings.worker_group_infos,
+        heartbeats=[heartbeat],
+        request_usage=258,
+        global_limit=settings.global_request_limit_per_minute,
+    )
+
+    assert "🚦 Лимиты" in text
+    assert "🌐 Пропускная способность:" in text
+    assert "🧠 Лимит аккаунта:" in text
+    assert "Fast1: 82/100" in text
+    assert "Итого:\n258/300" in text
+    assert "📉 Замедление:\nнет" in text
+    assert "Proxy capacity" not in text
+    assert "Backoff" not in text
+
+
+def test_scheduler_screen_is_separate_from_limits() -> None:
+    settings = Settings(_env_file=None)
+    heartbeat = WorkerHeartbeat(
+        worker_group="fast_1",
+        hostname="server",
+        public_ip="45.132.20.115",
+        assigned_positions=[500, 800, 1000],
+        request_limit_per_minute=100,
+        current_delay_seconds=2.3,
+        last_seen_at=datetime.now(UTC),
+        status="success",
+        dry_run=False,
+    )
+
+    text = format_scheduler_screen(
+        group_infos=settings.worker_group_infos,
+        heartbeats=[heartbeat],
+    )
+
+    assert "🧠 Умный планировщик" in text
+    assert "🚀 Fast1" in text
+    assert "Интервал:\n1.5–3.5 сек" in text
+    assert "Текущий:\n2.3 сек" in text
+    assert "Нагрузка" not in text
+
+
+def test_technical_status_keeps_raw_fields_separate() -> None:
+    settings = Settings(_env_file=None)
+    heartbeat = WorkerHeartbeat(
+        worker_group="fast_1",
+        hostname="server",
+        public_ip="45.132.20.115",
+        assigned_positions=[500, 800, 1000],
+        request_limit_per_minute=100,
+        last_seen_at=datetime.now(UTC),
+        status="safe_mode_429",
+        safe_mode=True,
+        dry_run=False,
     )
     worker_state = WorkerState(
         name="repricer:fast_2",
         last_heartbeat_at=datetime.now(UTC),
         last_cycle_at=datetime(2026, 5, 15, 19, 10, tzinfo=UTC),
         last_position_amount=400,
-        last_status="dry_run",
-        last_error=None,
+        last_status="failed",
+        last_error="http_400",
     )
 
-    text = format_proxy_status(
+    text = format_technical_status(
         worker_states=[worker_state],
         heartbeats=[heartbeat],
-        dry_run=True,
         request_usage=12,
         global_limit=settings.global_request_limit_per_minute,
-        group_infos=settings.worker_group_infos,
-        success_count=0,
-        error_count=0,
         recent_errors=[],
-        last_positions_by_amount={400: _position(400, "1999")},
     )
 
-    assert "🌐 Режим: прокси" in text
-    assert "Proxy capacity:" in text
-    assert "300/мин" in text
-    assert "💰 Изменение цен" in text
-    assert "Режим: только анализ" in text
-    assert "🚀 Fast 2" in text
-    assert "IP: 45.132.20.205" in text
-    assert "Последняя позиция: 400 робуксов, ID 1999" in text
-    assert "High:" not in text
-    assert "Normal:" not in text
+    assert "🔧 Технический статус" in text
+    assert "worker_group=fast_1" in text
+    assert "status=safe_mode_429" in text
+    assert "last_error=http_400" in text
 
 
-def test_proxy_status_shows_effective_limit_backoff_and_last_429() -> None:
+def test_limits_screen_shows_effective_limit_backoff_and_last_429() -> None:
     settings = Settings(_env_file=None)
     heartbeat = WorkerHeartbeat(
         worker_group="fast_1",
@@ -267,24 +435,16 @@ def test_proxy_status_shows_effective_limit_backoff_and_last_429() -> None:
         dry_run=True,
     )
 
-    text = format_proxy_status(
-        worker_states=[],
+    text = format_limits_screen(
+        group_infos=settings.worker_group_infos,
         heartbeats=[heartbeat],
-        dry_run=True,
         request_usage=12,
         global_limit=settings.global_request_limit_per_minute,
-        group_infos=settings.worker_group_infos,
-        success_count=0,
-        error_count=2,
-        recent_errors=[],
-        last_positions_by_amount={},
     )
 
-    assert "Лимит: 100/мин" in text
-    assert "Effective: 80/мин" in text
-    assert "Backoff: активен" in text
-    assert "Last 429: 15.05.2026 22:10" in text
-    assert "Средний интервал: 2.5–4.0 сек" in text
+    assert "Fast1: 0/100" in text
+    assert "📉 Замедление:\nактивно" in text
+    assert "🚫 Последний 429:\n15.05.2026 22:10" in text
 
 
 def test_position_card_uses_effective_proxy_frequency_after_backoff() -> None:
@@ -340,7 +500,7 @@ def test_position_card_shows_market_activity_from_schedule_state() -> None:
     assert "• Текущая: 1.9 сек" in text
 
 
-def test_proxy_status_explains_safe_mode_without_technical_links() -> None:
+def test_errors_screen_explains_safe_mode_without_technical_links() -> None:
     settings = Settings(_env_file=None)
     heartbeat = WorkerHeartbeat(
         worker_group="fast_1",
@@ -357,27 +517,19 @@ def test_proxy_status_explains_safe_mode_without_technical_links() -> None:
         dry_run=True,
     )
 
-    text = format_proxy_status(
-        worker_states=[],
-        heartbeats=[heartbeat],
-        dry_run=True,
-        request_usage=38,
-        global_limit=settings.global_request_limit_per_minute,
-        group_infos=settings.worker_group_infos,
-        success_count=0,
-        error_count=4,
+    text = format_errors_screen(
+        latest_price_write_error=None,
         recent_errors=[],
-        last_positions_by_amount={},
+        heartbeats=[heartbeat],
     )
 
-    assert "🟡 Safe mode активен" in text
-    assert "Причина: Starvell временно ограничил частоту запросов" in text
-    assert "Запросов: 38/300" in text
-    assert "Следующая попытка: через" in text
+    assert "🧯 Ошибки" in text
+    assert "429:\nнет" in text
+    assert "Прокси:\nесть предупреждения" in text
     assert "developer.mozilla.org" not in text
 
 
-def test_proxy_status_shows_price_write_ready_state() -> None:
+def test_price_write_screen_shows_ready_state() -> None:
     settings = Settings(_env_file=None)
     success_log = PriceUpdateLog(
         position_id=1,
@@ -387,29 +539,21 @@ def test_proxy_status_shows_price_write_ready_state() -> None:
         created_at=datetime(2026, 5, 15, 19, 10, tzinfo=UTC),
     )
 
-    text = format_proxy_status(
-        worker_states=[],
-        heartbeats=[],
+    text = format_price_write_screen(
         dry_run=False,
         real_price_writes_enabled=True,
         price_write_endpoint_configured=True,
         latest_price_update=(success_log, _position(500, "2000")),
-        request_usage=0,
-        global_limit=settings.global_request_limit_per_minute,
-        group_infos=settings.worker_group_infos,
-        success_count=1,
-        error_count=0,
-        recent_errors=[],
-        last_positions_by_amount={},
+        latest_price_write_error=None,
     )
 
     assert "💰 Изменение цен" in text
-    assert "Режим: реальные изменения" in text
-    assert "Endpoint: настроен" in text
-    assert "Статус: готов" in text
-    assert "Последнее успешное изменение цены:" in text
-    assert "Последняя ошибка записи:" in text
-    assert "500 робуксов, ID 2000" in text
+    assert "Режим:\n✅ реальные изменения" in text
+    assert "Endpoint:\n✅ настроен" in text
+    assert "Статус:\n✅ готов" in text
+    assert "Последнее успешное изменение:" in text
+    assert "500 робуксов" in text
+    assert "ID 2000" in text
 
 
 def test_price_change_toggle_result_is_clear_when_ready() -> None:
@@ -419,7 +563,7 @@ def test_price_change_toggle_result_is_clear_when_ready() -> None:
         endpoint_configured=True,
     )
 
-    assert text == "✅ Изменение цен включено.\nРеальная запись настроена и активна."
+    assert text == "✅ Изменение цен включено\n\nРеальная запись настроена и активна"
 
 
 def test_price_change_toggle_result_explains_missing_endpoint() -> None:
@@ -440,7 +584,7 @@ def test_price_change_toggle_result_explains_analysis_mode() -> None:
         endpoint_configured=True,
     )
 
-    assert text == "Изменение цен остановлено. Сейчас работает только анализ."
+    assert text == "🛑 Изменение цен остановлено\n\nБот продолжит анализировать рынок без изменения цен"
 
 
 def test_logs_show_proxy_group_and_missing_reason_text() -> None:

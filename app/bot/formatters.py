@@ -12,7 +12,7 @@ from app.db.models import (
     WorkerHeartbeat,
     WorkerState,
 )
-from app.repricer.adaptive_scheduler import display_interval_range, market_activity_label
+from app.repricer.adaptive_scheduler import display_interval_range, market_activity_label, timing_for_group
 from app.repricer.worker_groups import WorkerGroupInfo
 
 
@@ -138,14 +138,55 @@ def format_priority_frequency(
     return f"каждые ~{_duration(seconds)}"
 
 
-def format_main_menu(*, dry_run: bool) -> str:
+def format_main_menu(
+    *,
+    dry_run: bool,
+    real_price_writes_enabled: bool = False,
+    price_write_endpoint_configured: bool = False,
+    proxy_mode: str = "disabled",
+    worker_state: WorkerState | None = None,
+    heartbeats: list[WorkerHeartbeat] | None = None,
+    request_usage: int = 0,
+    global_limit: int = 100,
+    group_infos: list[WorkerGroupInfo] | None = None,
+) -> str:
+    heartbeats = heartbeats or []
+    active_proxy_count, total_proxy_count = _proxy_activity_counts(heartbeats, group_infos or [])
+    effective_limit = _account_effective_limit(heartbeats, global_limit)
+    account_usage = _account_usage(heartbeats, request_usage)
+    backoff_active = _account_backoff_active(heartbeats, effective_limit, global_limit)
+    worker_active = _worker_active(worker_state=worker_state, heartbeats=heartbeats)
+    proxy_line = (
+        f"✅ {active_proxy_count}/{total_proxy_count}"
+        if _use_proxy_ui(proxy_mode) and total_proxy_count > 0
+        else "напрямую"
+    )
     return "\n".join(
         [
             SEPARATOR,
             "🤖 Starvell Repricer",
             "",
             "💰 Изменение цен:",
-            _price_change_state_line(dry_run=dry_run),
+            _price_change_state_line(
+                dry_run=dry_run,
+                real_price_writes_enabled=real_price_writes_enabled,
+                endpoint_configured=price_write_endpoint_configured,
+            ),
+            "",
+            "🤖 Worker:",
+            "✅ активен" if worker_active else "⚠️ не отвечает",
+            "",
+            "🌐 Прокси:",
+            proxy_line,
+            "",
+            "🚦 Нагрузка:",
+            f"{account_usage}/{effective_limit}",
+            "",
+            "📉 Замедление:",
+            "активно" if backoff_active else "нет",
+            "",
+            "Выберите раздел:",
+            "",
             SEPARATOR,
         ]
     )
@@ -386,8 +427,8 @@ def format_general_settings(
             ),
             "🌐 Режим запросов: прокси",
             f"🚦 Общий лимит: {global_limit or request_limit}/мин",
-            f"🧠 Account effective limit: {_account_effective_limit(heartbeats or [], global_limit or request_limit)}/мин",
-            f"📉 Backoff: {'активен' if _account_backoff_active(heartbeats or [], _account_effective_limit(heartbeats or [], global_limit or request_limit), global_limit or request_limit) else 'нет'}",
+            f"🧠 Эффективный лимит аккаунта: {_account_effective_limit(heartbeats or [], global_limit or request_limit)}/мин",
+            f"📉 Замедление: {'активно' if _account_backoff_active(heartbeats or [], _account_effective_limit(heartbeats or [], global_limit or request_limit), global_limit or request_limit) else 'нет'}",
             "",
         ]
         for info in group_infos:
@@ -398,10 +439,10 @@ def format_general_settings(
             lines.extend(
                 [
                     f"{info.icon} {info.label}",
-                    f"• Configured limit: {configured_limit}/мин",
-                    f"• Effective limit: {effective_limit}/мин",
-                    f"• Backoff: {_backoff_text(info, heartbeat)}",
-                    f"• Last 429: {_last_429_text(heartbeat)}",
+                    f"• Лимит: {configured_limit}/мин",
+                    f"• Эффективный лимит: {effective_limit}/мин",
+                    f"• Замедление: {_backoff_text(info, heartbeat)}",
+                    f"• Последний 429: {_last_429_text(heartbeat)}",
                     f"• Позиции: {_positions_inline(info.positions)}",
                     f"• Частота: {_seconds_range(interval_min, interval_max)}",
                     f"• Текущая: {_seconds_value(getattr(heartbeat, 'current_delay_seconds', None))}",
@@ -449,9 +490,9 @@ def format_price_change_toggle_result(
     endpoint_configured: bool,
 ) -> str:
     if dry_run:
-        return "Изменение цен остановлено. Сейчас работает только анализ."
+        return "🛑 Изменение цен остановлено\n\nБот продолжит анализировать рынок без изменения цен"
     if real_price_writes_enabled and endpoint_configured:
-        return "✅ Изменение цен включено.\nРеальная запись настроена и активна."
+        return "✅ Изменение цен включено\n\nРеальная запись настроена и активна"
     if not endpoint_configured:
         return (
             "⚠️ Изменение цен включено, но endpoint не настроен.\n"
@@ -461,6 +502,334 @@ def format_price_change_toggle_result(
         "⚠️ Изменение цен включено, но реальные записи отключены в конфигурации.\n"
         "Реальные цены меняться не будут."
     )
+
+
+def format_status_overview(
+    *,
+    worker_state: WorkerState | None,
+    heartbeats: list[WorkerHeartbeat],
+    dry_run: bool,
+    real_price_writes_enabled: bool,
+    price_write_endpoint_configured: bool,
+    latest_price_update: tuple[PriceUpdateLog, Position | None] | None,
+    request_usage: int,
+    global_limit: int,
+    group_infos: list[WorkerGroupInfo],
+) -> str:
+    active_proxy_count, total_proxy_count = _proxy_activity_counts(heartbeats, group_infos)
+    effective_limit = _account_effective_limit(heartbeats, global_limit)
+    account_usage = _account_usage(heartbeats, request_usage)
+    account_backoff = _account_backoff_active(heartbeats, effective_limit, global_limit)
+    worker_active = _worker_active(worker_state=worker_state, heartbeats=heartbeats)
+    last_update_lines = _compact_price_log_lines(latest_price_update)
+    return "\n".join(
+        [
+            SEPARATOR,
+            "",
+            "📊 Статус репрайсера",
+            "",
+            "🤖 Worker:",
+            "✅ активен" if worker_active else "⚠️ не отвечает",
+            "",
+            "💰 Изменение цен:",
+            _price_change_state_line(
+                dry_run=dry_run,
+                real_price_writes_enabled=real_price_writes_enabled,
+                endpoint_configured=price_write_endpoint_configured,
+            ),
+            "",
+            "🌐 Прокси:",
+            f"✅ активны ({active_proxy_count}/{total_proxy_count})"
+            if total_proxy_count
+            else "напрямую",
+            "",
+            "🚦 Нагрузка:",
+            f"{account_usage}/{effective_limit}",
+            "",
+            "📉 Замедление:",
+            "активно" if account_backoff else "нет",
+            "",
+            "🚫 Последний 429:",
+            dt(_account_last_429(heartbeats)),
+            "",
+            "🕒 Последнее изменение:",
+            *last_update_lines,
+            "",
+            SEPARATOR,
+        ]
+    )
+
+
+def format_price_write_screen(
+    *,
+    dry_run: bool,
+    real_price_writes_enabled: bool,
+    price_write_endpoint_configured: bool,
+    latest_price_update: tuple[PriceUpdateLog, Position | None] | None,
+    latest_price_write_error: tuple[PriceUpdateLog, Position | None] | None,
+) -> str:
+    ready = (not dry_run) and real_price_writes_enabled and price_write_endpoint_configured
+    if dry_run:
+        status = "⚠️ только анализ"
+    elif not real_price_writes_enabled:
+        status = "⚠️ реальные записи отключены"
+    elif not price_write_endpoint_configured:
+        status = "⚠️ endpoint не настроен"
+    else:
+        status = "✅ готов"
+    return "\n".join(
+        [
+            SEPARATOR,
+            "",
+            "💰 Изменение цен",
+            "",
+            "Режим:",
+            "✅ реальные изменения" if ready else "❌ только анализ",
+            "",
+            "Endpoint:",
+            "✅ настроен" if price_write_endpoint_configured else "⚠️ не настроен",
+            "",
+            "Статус:",
+            status,
+            "",
+            "Последнее успешное изменение:",
+            *_price_log_block_lines(latest_price_update),
+            "",
+            "Последняя ошибка:",
+            *_price_log_block_lines(latest_price_write_error, include_reason=True),
+            "",
+            SEPARATOR,
+        ]
+    )
+
+
+def format_price_write_test_hint() -> str:
+    return "\n".join(
+        [
+            SEPARATOR,
+            "",
+            "🧪 Тест записи цены",
+            "",
+            "Тест с реальной отправкой запускается из консоли, чтобы случайно не изменить цену из Telegram.",
+            "",
+            "Без отправки:",
+            "python -m app.test_price_update --lot-id 2000 --price 123 --debug",
+            "",
+            "С отправкой:",
+            "python -m app.test_price_update --lot-id 2000 --price 123 --debug --confirm",
+            "",
+            SEPARATOR,
+        ]
+    )
+
+
+def format_proxy_screen(
+    *,
+    group_infos: list[WorkerGroupInfo],
+    heartbeats: list[WorkerHeartbeat],
+) -> str:
+    now = datetime.now(UTC)
+    heartbeat_by_group = {heartbeat.worker_group: heartbeat for heartbeat in heartbeats}
+    lines = [SEPARATOR, "", "🌐 Прокси", ""]
+    for index, info in enumerate(group_infos):
+        heartbeat = heartbeat_by_group.get(info.name) or heartbeat_by_group.get("all")
+        is_active = bool(heartbeat and (now - heartbeat.last_seen_at).total_seconds() <= 90)
+        lines.extend(
+            [
+                f"{info.icon} {info.label}",
+                "",
+                f"IP: {heartbeat.public_ip if heartbeat and heartbeat.public_ip else 'нет данных'}",
+                "",
+                "Позиции:",
+                _positions_inline(info.positions),
+                "",
+                "Статус:",
+                _server_status(heartbeat, is_active),
+            ]
+        )
+        if index < len(group_infos) - 1:
+            lines.extend(["", "---", ""])
+    lines.extend(["", SEPARATOR])
+    return "\n".join(lines)
+
+
+def format_limits_screen(
+    *,
+    group_infos: list[WorkerGroupInfo],
+    heartbeats: list[WorkerHeartbeat],
+    request_usage: int,
+    global_limit: int,
+) -> str:
+    heartbeat_by_group = {heartbeat.worker_group: heartbeat for heartbeat in heartbeats}
+    proxy_capacity = sum(info.request_limit_per_minute for info in group_infos)
+    account_effective_limit = _account_effective_limit(heartbeats, global_limit)
+    account_usage = _account_usage(heartbeats, request_usage)
+    account_backoff = _account_backoff_active(
+        heartbeats,
+        account_effective_limit,
+        global_limit,
+    ) or any(
+        _backoff_active(info, heartbeat_by_group.get(info.name) or heartbeat_by_group.get("all"))
+        for info in group_infos
+    )
+    lines = [
+        SEPARATOR,
+        "",
+        "🚦 Лимиты",
+        "",
+        "🌐 Пропускная способность:",
+        f"{proxy_capacity}/мин",
+        "",
+        "🧠 Лимит аккаунта:",
+        f"{account_effective_limit}/мин",
+        "",
+        "📡 Нагрузка:",
+        "",
+    ]
+    for info in group_infos:
+        heartbeat = heartbeat_by_group.get(info.name) or heartbeat_by_group.get("all")
+        lines.append(
+            f"{_compact_group_label(info)}: "
+            f"{_profile_usage(heartbeat)}/{_configured_limit(info, heartbeat)}"
+        )
+    lines.extend(
+        [
+            "",
+            "Итого:",
+            f"{account_usage}/{account_effective_limit}",
+            "",
+            "📉 Замедление:",
+            "активно" if account_backoff else "нет",
+            "",
+            "🚫 Последний 429:",
+            dt(_account_last_429(heartbeats)),
+            "",
+            SEPARATOR,
+        ]
+    )
+    return "\n".join(lines)
+
+
+def format_scheduler_screen(
+    *,
+    group_infos: list[WorkerGroupInfo],
+    heartbeats: list[WorkerHeartbeat],
+) -> str:
+    heartbeat_by_group = {heartbeat.worker_group: heartbeat for heartbeat in heartbeats}
+    lines = [SEPARATOR, "", "🧠 Умный планировщик", ""]
+    for index, info in enumerate(group_infos):
+        heartbeat = heartbeat_by_group.get(info.name) or heartbeat_by_group.get("all")
+        timing = timing_for_group(info.name)
+        lines.extend(
+            [
+                f"{info.icon} {_compact_group_label(info)}",
+                "",
+                "Позиции:",
+                _positions_inline(info.positions),
+                "",
+                "Интервал:",
+                _seconds_range(timing.min_seconds, timing.max_seconds),
+                "",
+                "Текущий:",
+                _seconds_value(getattr(heartbeat, "current_delay_seconds", None)),
+            ]
+        )
+        if index < len(group_infos) - 1:
+            lines.extend(["", "---", ""])
+    lines.extend(["", SEPARATOR])
+    return "\n".join(lines)
+
+
+def format_errors_screen(
+    *,
+    latest_price_write_error: tuple[PriceUpdateLog, Position | None] | None,
+    recent_errors: list[tuple[PriceUpdateLog, Position | None]],
+    heartbeats: list[WorkerHeartbeat],
+) -> str:
+    last_429 = _account_last_429(heartbeats)
+    proxy_problem = any(
+        heartbeat.safe_mode or heartbeat.errors_403 or heartbeat.errors_timeout
+        for heartbeat in heartbeats
+    )
+    system_problem = any(error.reason for error, _position in recent_errors)
+    return "\n".join(
+        [
+            SEPARATOR,
+            "",
+            "🧯 Ошибки",
+            "",
+            "Последняя ошибка:",
+            *_price_log_block_lines(latest_price_write_error, include_reason=True),
+            "",
+            "429:",
+            dt(last_429) if last_429 else "нет",
+            "",
+            "Прокси:",
+            "есть предупреждения" if proxy_problem else "нет",
+            "",
+            "Системные:",
+            "есть ошибки" if system_problem else "нет",
+            "",
+            SEPARATOR,
+        ]
+    )
+
+
+def format_technical_status(
+    *,
+    worker_states: list[WorkerState],
+    heartbeats: list[WorkerHeartbeat],
+    request_usage: int,
+    global_limit: int,
+    recent_errors: list[tuple[PriceUpdateLog, Position | None]],
+) -> str:
+    lines = [
+        SEPARATOR,
+        "",
+        "🔧 Технический статус",
+        "",
+        f"request_usage={request_usage}",
+        f"global_limit={global_limit}",
+        "",
+        "heartbeats:",
+    ]
+    if not heartbeats:
+        lines.append("—")
+    for heartbeat in heartbeats:
+        lines.extend(
+            [
+                f"worker_group={heartbeat.worker_group}",
+                f"status={heartbeat.status}",
+                f"heartbeat={dt(heartbeat.last_seen_at)}",
+                f"public_ip={heartbeat.public_ip or '—'}",
+                f"profile_usage={_profile_usage(heartbeat)}",
+                f"effective_limit={getattr(heartbeat, 'effective_request_limit_per_minute', None) or '—'}",
+                f"last429={dt(getattr(heartbeat, 'last_429_at', None))}",
+                f"safe_mode={heartbeat.safe_mode}",
+                "---",
+            ]
+        )
+    lines.extend(["", "worker_state:"])
+    if not worker_states:
+        lines.append("—")
+    for state in worker_states:
+        lines.extend(
+            [
+                f"name={state.name}",
+                f"last_status={state.last_status or '—'}",
+                f"last_error={state.last_error or '—'}",
+                f"last_cycle={dt(state.last_cycle_at)}",
+                "---",
+            ]
+        )
+    lines.extend(["", "recent_errors:"])
+    if not recent_errors:
+        lines.append("—")
+    for log, position in recent_errors:
+        amount = position.robux_amount if position else log.position_id
+        lines.append(f"{dt(log.created_at)} position={amount} raw_reason={log.reason or '—'}")
+    lines.append(SEPARATOR)
+    return "\n".join(lines)
 
 
 def format_status(
@@ -618,10 +987,10 @@ def format_proxy_status(
         "",
         "🌐 Режим: прокси",
         "",
-        "🚦 Proxy capacity:",
+        "🚦 Пропускная способность прокси:",
         f"{proxy_capacity}/мин",
         "",
-        "🧠 Account effective limit:",
+        "🧠 Эффективный лимит аккаунта:",
         f"{account_effective_limit}/мин",
         "",
         "📡 Текущая нагрузка:",
@@ -633,10 +1002,10 @@ def format_proxy_status(
         "Итого:",
         f"{account_usage}/{account_effective_limit}",
         "",
-        "📉 Backoff:",
-        "активен" if account_backoff else "нет",
+        "📉 Замедление:",
+        "активно" if account_backoff else "нет",
         "",
-        "Last 429:",
+        "🚫 Последний 429:",
         dt(account_last_429),
         "",
         "📊 Умный планировщик",
@@ -658,13 +1027,13 @@ def format_proxy_status(
                 f"{info.icon} {info.label}",
                 f"• Позиции: {_positions_inline(info.positions)}",
                 f"• Лимит: {configured_limit}/мин",
-                f"• Effective: {effective_limit}/мин",
+                f"• Эффективный лимит: {effective_limit}/мин",
                 f"• Нагрузка: {_profile_usage(heartbeat)}/{configured_limit}",
                 f"• Средний интервал: {_seconds_range(interval_min, interval_max)}",
                 f"• Текущая: {_seconds_value(getattr(heartbeat, 'current_delay_seconds', None))}",
                 f"• Самая активная позиция: {getattr(heartbeat, 'most_active_position_amount', None) or '—'}",
-                f"• Backoff: {_backoff_text(info, heartbeat)}",
-                f"• Last 429: {_last_429_text(heartbeat)}",
+                f"• Замедление: {_backoff_text(info, heartbeat)}",
+                f"• Последний 429: {_last_429_text(heartbeat)}",
                 f"• IP: {heartbeat.public_ip if heartbeat and heartbeat.public_ip else 'нет данных'}",
                 f"• Статус: {_server_status(heartbeat, is_active)}",
             ]
@@ -751,11 +1120,11 @@ def format_proxy_profiles(
         "📊 Прокси и лимиты",
         f"Режим: {'прокси' if _use_proxy_ui(proxy_mode) else 'напрямую'}",
         "",
-        f"Proxy capacity: {proxy_capacity}/мин",
-        f"Account effective limit: {account_effective_limit}/мин",
+        f"Пропускная способность прокси: {proxy_capacity}/мин",
+        f"Эффективный лимит аккаунта: {account_effective_limit}/мин",
         f"Текущая нагрузка: {account_usage}/{account_effective_limit}",
-        f"Backoff: {'активен' if _account_backoff_active(heartbeats, account_effective_limit, global_limit) else 'нет'}",
-        f"Last 429: {dt(_account_last_429(heartbeats))}",
+        f"Замедление: {'активно' if _account_backoff_active(heartbeats, account_effective_limit, global_limit) else 'нет'}",
+        f"Последний 429: {dt(_account_last_429(heartbeats))}",
         "",
     ]
 
@@ -772,13 +1141,13 @@ def format_proxy_profiles(
             [
                 f"{info.icon} {info.label}",
                 _positions_inline(info.positions),
-                f"Configured limit: {configured_limit}/мин",
-                f"Effective limit: {effective_limit}/мин",
+                f"Лимит: {configured_limit}/мин",
+                f"Эффективный лимит: {effective_limit}/мин",
                 f"Нагрузка: {_profile_usage(heartbeat)}/{configured_limit}",
                 f"Частота: {_seconds_range(interval_min, interval_max)}",
                 f"Текущая: {_seconds_value(getattr(heartbeat, 'current_delay_seconds', None))}",
-                f"Backoff: {_backoff_text(info, heartbeat)}",
-                f"Last 429: {_last_429_text(heartbeat)}",
+                f"Замедление: {_backoff_text(info, heartbeat)}",
+                f"Последний 429: {_last_429_text(heartbeat)}",
                 f"IP: {heartbeat.public_ip if heartbeat and heartbeat.public_ip else 'нет данных'}",
                 f"Статус: {_server_status(heartbeat, is_active)}",
                 f"Последний сигнал: {dt(heartbeat.last_seen_at if heartbeat else None)}",
@@ -1002,6 +1371,34 @@ def _price_log_summary(item: tuple[PriceUpdateLog, Position | None] | None) -> s
     return f"{dt(log.created_at)} · {position_text} · {price_text}"
 
 
+def _compact_price_log_lines(item: tuple[PriceUpdateLog, Position | None] | None) -> list[str]:
+    if item is None:
+        return ["—"]
+    log, position = item
+    amount = f"{position.robux_amount} робуксов" if position else f"позиция #{log.position_id}"
+    return [dt(log.created_at), amount, money(log.new_price)]
+
+
+def _price_log_block_lines(
+    item: tuple[PriceUpdateLog, Position | None] | None,
+    *,
+    include_reason: bool = False,
+) -> list[str]:
+    if item is None:
+        return ["—"]
+    log, position = item
+    lines = [dt(log.created_at)]
+    if position:
+        lines.extend([f"{position.robux_amount} робуксов", f"ID {_lot_id_text(position)}"])
+    else:
+        lines.append(f"позиция #{log.position_id}")
+    if log.new_price is not None:
+        lines.append(money(log.new_price))
+    if include_reason:
+        lines.append(_reason_label(_reason_key(log.reason), log.reason))
+    return lines
+
+
 def _request_budget(request_limit: int, percent: int) -> int:
     return round(request_limit * percent / 100)
 
@@ -1106,7 +1503,13 @@ def _account_last_429(heartbeats: list[WorkerHeartbeat]) -> datetime | None:
     values = [
         value
         for heartbeat in heartbeats
-        if (value := getattr(heartbeat, "account_last_429_at", None)) is not None
+        if (
+            value := (
+                getattr(heartbeat, "account_last_429_at", None)
+                or getattr(heartbeat, "last_429_at", None)
+            )
+        )
+        is not None
     ]
     return max(values) if values else None
 
@@ -1145,7 +1548,7 @@ def _backoff_text(
     info: WorkerGroupInfo,
     heartbeat: WorkerHeartbeat | None,
 ) -> str:
-    return "активен" if _backoff_active(info, heartbeat) else "нет"
+    return "активно" if _backoff_active(info, heartbeat) else "нет"
 
 
 def _backoff_active(
@@ -1169,7 +1572,7 @@ def _server_status(heartbeat: WorkerHeartbeat | None, is_active: bool) -> str:
     if heartbeat is None:
         return "⚪ нет сигнала"
     if _is_safe_mode_heartbeat(heartbeat):
-        return "🟡 Safe mode активен"
+        return "🟡 защитный режим"
     return "✅ активен" if is_active else "⚠️ не отвечает"
 
 
@@ -1208,6 +1611,38 @@ def _adaptive_retry_seconds(consecutive_errors: int) -> float:
 
 def _use_proxy_ui(proxy_mode: str) -> bool:
     return proxy_mode == "enabled"
+
+
+def _worker_active(
+    *,
+    worker_state: WorkerState | None,
+    heartbeats: list[WorkerHeartbeat],
+) -> bool:
+    now = datetime.now(UTC)
+    if any((now - heartbeat.last_seen_at).total_seconds() <= 90 for heartbeat in heartbeats):
+        return True
+    heartbeat = worker_state.last_heartbeat_at if worker_state else None
+    return bool(heartbeat and (now - heartbeat).total_seconds() <= 90)
+
+
+def _proxy_activity_counts(
+    heartbeats: list[WorkerHeartbeat],
+    group_infos: list[WorkerGroupInfo],
+) -> tuple[int, int]:
+    if not group_infos:
+        return 0, 0
+    now = datetime.now(UTC)
+    heartbeat_by_group = {heartbeat.worker_group: heartbeat for heartbeat in heartbeats}
+    active = 0
+    for info in group_infos:
+        heartbeat = heartbeat_by_group.get(info.name) or heartbeat_by_group.get("all")
+        if heartbeat and (now - heartbeat.last_seen_at).total_seconds() <= 90:
+            active += 1
+    return active, len(group_infos)
+
+
+def _compact_group_label(info: WorkerGroupInfo) -> str:
+    return info.label.replace(" ", "")
 
 
 def _group_info_for_position(

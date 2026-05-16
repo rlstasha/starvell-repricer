@@ -4,19 +4,17 @@ from app.db.models import Position
 
 
 def main_menu_keyboard(*, dry_run: bool) -> InlineKeyboardMarkup:
-    price_change_text = (
-        "💰 Включить изменение цен"
-        if dry_run
-        else "🛑 Остановить изменение цен"
-    )
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="📦 Позиции", callback_data="positions:list")],
-            [InlineKeyboardButton(text="⚙️ Общие настройки", callback_data="settings:general")],
+            [InlineKeyboardButton(text="💰 Изменение цен", callback_data="price:status")],
             [InlineKeyboardButton(text="📊 Статус", callback_data="status:show")],
-            [InlineKeyboardButton(text="📊 Прокси и лимиты", callback_data="proxies:limits")],
-            [InlineKeyboardButton(text=price_change_text, callback_data="settings:toggle_dry_run")],
+            [
+                InlineKeyboardButton(text="🌐 Прокси", callback_data="proxies:show"),
+                InlineKeyboardButton(text="🚦 Лимиты", callback_data="limits:show"),
+            ],
             [InlineKeyboardButton(text="📝 Логи последних действий", callback_data="logs:recent")],
+            [InlineKeyboardButton(text="⚙️ Настройки", callback_data="settings:general")],
         ]
     )
 
@@ -24,6 +22,46 @@ def main_menu_keyboard(*, dry_run: bool) -> InlineKeyboardMarkup:
 def back_to_main_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:main")]]
+    )
+
+
+def back_to_status_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="status:show")]]
+    )
+
+
+def status_sections_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="💰 Изменение цен", callback_data="price:status")],
+            [
+                InlineKeyboardButton(text="🌐 Прокси", callback_data="proxies:show"),
+                InlineKeyboardButton(text="🚦 Лимиты", callback_data="limits:show"),
+            ],
+            [
+                InlineKeyboardButton(text="🧠 Планировщик", callback_data="scheduler:show"),
+                InlineKeyboardButton(text="🧯 Ошибки", callback_data="errors:show"),
+            ],
+            [InlineKeyboardButton(text="📝 Последние действия", callback_data="logs:recent")],
+            [InlineKeyboardButton(text="🔧 Технический статус", callback_data="technical:status")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:main")],
+        ]
+    )
+
+
+def price_status_keyboard(*, dry_run: bool) -> InlineKeyboardMarkup:
+    toggle_text = (
+        "💰 Включить изменение цен"
+        if dry_run
+        else "🛑 Остановить изменение цен"
+    )
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=toggle_text, callback_data="settings:toggle_dry_run")],
+            [InlineKeyboardButton(text="🧪 Тест записи цены", callback_data="price:test_write")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="status:show")],
+        ]
     )
 
 
