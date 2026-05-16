@@ -4,13 +4,18 @@ import re
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
 from app.core.config import Settings
 from app.core.logging import get_logger
 from app.core.network import mask_proxy_url
-from app.market.exceptions import StarvellEndpointNotConfiguredError, StarvellWriteDisabledError
+from app.market.exceptions import (
+    StarvellEndpointNotConfiguredError,
+    StarvellPayloadStyleError,
+    StarvellWriteDisabledError,
+)
 from app.market.schemas import (
     AccountInfo,
     MarketOffer,
@@ -111,8 +116,8 @@ class MarketOffersFetchResult:
 class StarvellClient:
     """Single boundary for all Starvell/Statvell HTTP access.
 
-    Read operations use safe GET requests. Price writes stay behind this boundary and are
-    deliberately blocked until a reviewed write integration is added.
+    Read operations and price writes stay behind this boundary so auth, proxy selection,
+    rate limiting, and secret masking remain consistent in one place.
     """
 
     def __init__(
@@ -412,17 +417,96 @@ class StarvellClient:
         position_amount: int,
         lot_id: str | None,
         new_price: Decimal,
+        *,
+        allow_real_write: bool | None = None,
     ) -> UpdateResult:
-        """Block real price writes until the Starvell write flow is explicitly reviewed."""
-        await self.rate_limiter.acquire()
-        self.logger.error(
-            "starvell_price_update_blocked",
+        """Update an own lot price through the configured Starvell write endpoint."""
+        if not lot_id:
+            raise StarvellEndpointNotConfiguredError("Не найден ID лота для изменения цены")
+
+        real_write_allowed = (not self.settings.dry_run) if allow_real_write is None else allow_real_write
+        if not real_write_allowed:
+            raise StarvellWriteDisabledError(
+                "Реальное изменение цены отключено: включен режим только анализа"
+            )
+        if not self.settings.enable_real_price_writes:
+            raise StarvellWriteDisabledError(
+                "Реальное изменение цены отключено: ENABLE_REAL_PRICE_WRITES=false"
+            )
+        if not self.settings.market_update_lot_price_url:
+            raise StarvellEndpointNotConfiguredError(
+                "Реальное изменение цены отключено: не настроен MARKET_UPDATE_LOT_PRICE_URL"
+            )
+
+        method = self.settings.market_update_lot_price_method
+        url = _format_price_update_url(
+            self.settings.market_update_lot_price_url,
+            lot_id=lot_id,
             position_amount=position_amount,
+        )
+        payload = _price_update_payload(
+            new_price,
+            style=self.settings.market_update_price_payload_style,
+        )
+
+        if self.settings.price_write_discovery:
+            self.logger.info(
+                "starvell_price_write_discovery",
+                method=method,
+                url=url,
+                payload=payload,
+                payload_style=self.settings.market_update_price_payload_style,
+                proxy_profile=self.proxy_profile or "direct",
+                proxy=mask_proxy_url(self.proxy_url),
+            )
+
+        try:
+            response = await self._request(
+                method,
+                url,
+                request_type="price_update",
+                json=payload,
+            )
+        except httpx.HTTPStatusError as exc:
+            self.logger.warning(
+                "price_update_failed",
+                position=position_amount,
+                lot_id=lot_id,
+                new_price=str(new_price),
+                reason=safe_starvell_error_reason(exc),
+                status_code=exc.response.status_code,
+                proxy=self.proxy_profile or "direct",
+            )
+            raise
+        except Exception as exc:
+            self.logger.warning(
+                "price_update_failed",
+                position=position_amount,
+                lot_id=lot_id,
+                new_price=str(new_price),
+                reason=safe_starvell_error_reason(exc),
+                status_code=None,
+                proxy=self.proxy_profile or "direct",
+            )
+            raise
+
+        raw_payload: dict[str, Any] | None = None
+        try:
+            payload_response = response.json()
+        except ValueError:
+            payload_response = None
+        if isinstance(payload_response, dict):
+            raw_payload = payload_response
+
+        self.logger.info(
+            "price_updated",
+            position=position_amount,
             lot_id=lot_id,
             new_price=str(new_price),
-            reason="write endpoint is disabled",
+            proxy=self.proxy_profile or "direct",
+            status="success",
         )
-        raise StarvellWriteDisabledError("Starvell price writes are disabled in this build")
+        return UpdateResult(success=True, raw_payload=raw_payload)
 
     async def get_account_info(self) -> AccountInfo:
         """Fetch account information through the configured safe GET endpoint."""
@@ -491,6 +575,12 @@ def explain_http_status(status_code: int) -> str:
 
 
 def safe_starvell_error_reason(exc: Exception) -> str:
+    if isinstance(exc, StarvellWriteDisabledError):
+        return "real_price_writes_disabled"
+    if isinstance(exc, StarvellPayloadStyleError):
+        return "price_update_payload_unknown"
+    if isinstance(exc, StarvellEndpointNotConfiguredError):
+        return "price_update_endpoint_missing"
     if isinstance(exc, httpx.HTTPStatusError):
         status_code = exc.response.status_code
         if status_code == 401:
@@ -506,6 +596,45 @@ def safe_starvell_error_reason(exc: Exception) -> str:
         return "timeout"
     reason = str(exc).strip()
     return reason or type(exc).__name__
+
+
+def _format_price_update_url(
+    template: str,
+    *,
+    lot_id: str,
+    position_amount: int,
+) -> str:
+    lot_id_part = quote(str(lot_id), safe="")
+    position_part = quote(str(position_amount), safe="")
+    return (
+        template.strip()
+        .replace("{lot_id}", lot_id_part)
+        .replace("{listing_id}", lot_id_part)
+        .replace("{position_amount}", position_part)
+    )
+
+
+def _price_update_payload(price: Decimal, *, style: str) -> dict[str, int | float]:
+    normalized = style.strip().lower()
+    field_by_style = {
+        "auto": "price",
+        "price": "price",
+        "amount": "amount",
+        "cost": "cost",
+    }
+    field_name = field_by_style.get(normalized)
+    if field_name is None:
+        raise StarvellPayloadStyleError(
+            "Неизвестный payload изменения цены. Нужно посмотреть Network."
+        )
+    return {field_name: _json_price_value(price)}
+
+
+def _json_price_value(price: Decimal) -> int | float:
+    normalized = price.quantize(Decimal("0.01"))
+    if normalized == normalized.to_integral_value():
+        return int(normalized)
+    return float(normalized)
 
 
 def _error_kind_from_status(status_code: int) -> str | None:

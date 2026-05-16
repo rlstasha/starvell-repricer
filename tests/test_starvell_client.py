@@ -13,6 +13,7 @@ from app.market.client import (
     parse_starvell_market_offers_payload,
     parse_starvell_own_lot,
 )
+from app.market.exceptions import StarvellEndpointNotConfiguredError, StarvellWriteDisabledError
 from app.repricer.rate_limiter import InMemoryFixedWindowRateLimiter
 
 
@@ -431,6 +432,81 @@ async def test_get_my_lot_uses_safe_get_offer_page() -> None:
 
     assert lot is not None
     assert lot.price == Decimal("79.30000")
+
+
+@pytest.mark.asyncio
+async def test_update_my_lot_price_blocks_when_real_writes_disabled() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError(f"Unexpected request: {request.url}")
+
+    client = httpx.AsyncClient(
+        base_url="https://starvell.example",
+        transport=httpx.MockTransport(handler),
+    )
+    settings = Settings(
+        _env_file=None,
+        market_base_url="https://starvell.example",
+        enable_real_price_writes=False,
+        market_update_lot_price_url="/api/offers/{lot_id}/price",
+    )
+
+    async with StarvellClient(settings, InMemoryFixedWindowRateLimiter(), client) as starvell:
+        with pytest.raises(StarvellWriteDisabledError):
+            await starvell.update_my_lot_price(500, "2000", Decimal("123"), allow_real_write=True)
+
+
+@pytest.mark.asyncio
+async def test_update_my_lot_price_requires_endpoint() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError(f"Unexpected request: {request.url}")
+
+    client = httpx.AsyncClient(
+        base_url="https://starvell.example",
+        transport=httpx.MockTransport(handler),
+    )
+    settings = Settings(
+        _env_file=None,
+        market_base_url="https://starvell.example",
+        enable_real_price_writes=True,
+    )
+
+    async with StarvellClient(settings, InMemoryFixedWindowRateLimiter(), client) as starvell:
+        with pytest.raises(StarvellEndpointNotConfiguredError):
+            await starvell.update_my_lot_price(500, "2000", Decimal("123"), allow_real_write=True)
+
+
+@pytest.mark.asyncio
+async def test_update_my_lot_price_uses_configured_write_endpoint() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "PATCH"
+        assert request.url.path == "/api/offers/2000/price"
+        payload = json.loads(request.content)
+        assert payload == {"price": 123.45}
+        return httpx.Response(200, json={"ok": True})
+
+    client = httpx.AsyncClient(
+        base_url="https://starvell.example",
+        transport=httpx.MockTransport(handler),
+    )
+    settings = Settings(
+        _env_file=None,
+        market_base_url="https://starvell.example",
+        enable_real_price_writes=True,
+        market_update_lot_price_url="/api/offers/{lot_id}/price",
+        market_update_lot_price_method="PATCH",
+        market_update_price_payload_style="price",
+    )
+
+    async with StarvellClient(settings, InMemoryFixedWindowRateLimiter(), client) as starvell:
+        result = await starvell.update_my_lot_price(
+            500,
+            "2000",
+            Decimal("123.45"),
+            allow_real_write=True,
+        )
+
+    assert result.success is True
+    assert result.raw_payload == {"ok": True}
 
 
 def test_explain_http_status_returns_human_russian_text() -> None:

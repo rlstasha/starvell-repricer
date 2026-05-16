@@ -94,3 +94,22 @@ def test_account_effective_limit_defaults_to_full_proxy_capacity() -> None:
     assert settings.token_limit_mode is True
     assert settings.account_effective_limit_per_minute == 300
     assert settings.account_min_limit_per_minute == 60
+
+
+def test_price_write_settings_default_to_safe_analysis_mode() -> None:
+    settings = Settings(_env_file=None)
+
+    assert settings.enable_real_price_writes is False
+    assert settings.market_update_lot_price_url == ""
+    assert settings.market_update_lot_price_method == "POST"
+    assert settings.market_update_price_payload_style == "auto"
+
+
+def test_price_write_method_is_validated() -> None:
+    with pytest.raises(ValueError):
+        Settings(_env_file=None, market_update_lot_price_method="GET")
+
+
+def test_price_write_payload_style_is_validated() -> None:
+    with pytest.raises(ValueError):
+        Settings(_env_file=None, market_update_price_payload_style="unknown")

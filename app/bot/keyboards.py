@@ -4,14 +4,18 @@ from app.db.models import Position
 
 
 def main_menu_keyboard(*, dry_run: bool) -> InlineKeyboardMarkup:
-    dry_run_text = "🧪 Dry-run выключить" if dry_run else "🧪 Dry-run включить"
+    price_change_text = (
+        "💰 Включить изменение цен"
+        if dry_run
+        else "🛑 Остановить изменение цен"
+    )
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="📦 Позиции", callback_data="positions:list")],
             [InlineKeyboardButton(text="⚙️ Общие настройки", callback_data="settings:general")],
             [InlineKeyboardButton(text="📊 Статус", callback_data="status:show")],
             [InlineKeyboardButton(text="📊 Прокси и лимиты", callback_data="proxies:limits")],
-            [InlineKeyboardButton(text=dry_run_text, callback_data="settings:toggle_dry_run")],
+            [InlineKeyboardButton(text=price_change_text, callback_data="settings:toggle_dry_run")],
             [InlineKeyboardButton(text="📝 Логи последних действий", callback_data="logs:recent")],
         ]
     )
@@ -71,10 +75,14 @@ def position_card_keyboard(position: Position) -> InlineKeyboardMarkup:
 
 
 def general_settings_keyboard(*, dry_run: bool) -> InlineKeyboardMarkup:
-    dry_run_text = "🧪 Dry-run выключить" if dry_run else "🧪 Dry-run включить"
+    price_change_text = (
+        "💰 Включить изменение цен"
+        if dry_run
+        else "🛑 Остановить изменение цен"
+    )
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text=dry_run_text, callback_data="settings:toggle_dry_run")],
+            [InlineKeyboardButton(text=price_change_text, callback_data="settings:toggle_dry_run")],
             [InlineKeyboardButton(text="📊 Статус", callback_data="status:show")],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:main")],
         ]

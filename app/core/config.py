@@ -44,6 +44,11 @@ class Settings(BaseSettings):
     market_offers_url: str = "/roblox/packages"
     market_offers_api_url: str = "/api/offers/list-by-category"
     market_offers_limit: int = Field(default=100, ge=1, le=500)
+    enable_real_price_writes: bool = False
+    market_update_lot_price_url: str = ""
+    market_update_lot_price_method: str = "POST"
+    market_update_price_payload_style: str = "auto"
+    price_write_discovery: bool = False
 
     own_seller_id: str | None = None
     own_seller_username: str | None = None
@@ -136,6 +141,24 @@ class Settings(BaseSettings):
         if normalized in {"enabled", "disabled"}:
             return normalized
         raise ValueError("PROXY_MODE must be enabled or disabled")
+
+    @field_validator("market_update_lot_price_method")
+    @classmethod
+    def validate_market_update_lot_price_method(cls, value: str) -> str:
+        normalized = value.strip().upper()
+        if normalized in {"POST", "PATCH", "PUT"}:
+            return normalized
+        raise ValueError("MARKET_UPDATE_LOT_PRICE_METHOD must be POST, PATCH, or PUT")
+
+    @field_validator("market_update_price_payload_style")
+    @classmethod
+    def validate_market_update_price_payload_style(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized in {"auto", "price", "amount", "cost"}:
+            return normalized
+        raise ValueError(
+            "MARKET_UPDATE_PRICE_PAYLOAD_STYLE must be auto, price, amount, or cost"
+        )
 
     @field_validator("proxy_fast_1_url", "proxy_fast_2_url", "proxy_slow_url")
     @classmethod

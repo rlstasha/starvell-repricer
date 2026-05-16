@@ -206,7 +206,39 @@ PROXY_SLOW_POSITIONS=40,80,200,2100,2500,3600,4500,10000,22500
 1. Откройте бота.
 2. Нажмите `/start`.
 3. Откройте `📊 Прокси и лимиты`.
-4. Проверьте IP, лимиты, позиции, dry-run и safe mode.
+4. Проверьте IP, лимиты, позиции, режим изменения цен и safe mode.
+
+## Реальное изменение цен
+
+Прокси не включают реальные изменения цен автоматически. Для записи цены должны
+быть одновременно настроены:
+
+```env
+DRY_RUN=false
+ENABLE_REAL_PRICE_WRITES=true
+MARKET_UPDATE_LOT_PRICE_URL=https://starvell.com/api/offers/{lot_id}/update
+MARKET_UPDATE_LOT_PRICE_METHOD=POST
+MARKET_UPDATE_PRICE_PAYLOAD_STYLE=price
+```
+
+Безопасным GET frontend-кода Starvell найден основной кандидат:
+
+```env
+MARKET_UPDATE_LOT_PRICE_URL=https://starvell.com/api/offers/{lot_id}/update
+MARKET_UPDATE_LOT_PRICE_METHOD=POST
+MARKET_UPDATE_PRICE_PAYLOAD_STYLE=price
+```
+
+Если endpoint неизвестен, откройте Starvell вручную, измените цену своего лота,
+посмотрите DevTools -> Network и найдите POST/PATCH/PUT запрос сохранения цены.
+Cookie, session, csrf, token и proxy password не выводите в логи и не коммитьте.
+
+Проверка:
+
+```bash
+python -m app.check_price_write_config
+python -m app.test_price_update --lot-id 2000 --price 123
+```
 
 IP появляется после запуска worker или после команды `python -m app.check_proxies`.
 

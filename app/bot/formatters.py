@@ -26,7 +26,7 @@ STATUS_LABELS = {
     "updated": "цена обновлена",
     "running": "выполняется",
     "idle": "ожидает",
-    "dry_run": "тестовый режим, цена не изменена",
+    "dry_run": "только анализ",
     "skipped": "пропущено",
     "failed": "ошибка",
     "error": "ошибка",
@@ -46,11 +46,14 @@ REASON_LABELS = {
         "Найден конкурент. Расчетная цена ниже на шаг."
     ),
     "already_at_target": "Цена уже равна расчетной.",
-    "dry_run": "Тестовый режим. Цена не изменена.",
+    "dry_run": "Только анализ. Цена не изменена.",
     "updated": "Цена обновлена.",
     "skipped": "Позиция пропущена.",
     "error": "Произошла ошибка.",
     "missing_lot_id": "Не найден ID лота.",
+    "real_price_writes_disabled": "Реальное изменение цен выключено.",
+    "price_update_endpoint_missing": "Не настроен endpoint изменения цены.",
+    "price_update_payload_unknown": "Неизвестный payload изменения цены.",
     "unauthorized": "Ошибка авторизации Starvell.",
     "forbidden": "Доступ временно запрещен.",
     "timeout": "Сайт слишком долго отвечает.",
@@ -136,19 +139,13 @@ def format_priority_frequency(
 
 
 def format_main_menu(*, dry_run: bool) -> str:
-    mode = "включен" if dry_run else "выключен"
-    safety = (
-        "реальные цены не меняются"
-        if dry_run
-        else "режим реальных изменений"
-    )
     return "\n".join(
         [
             SEPARATOR,
             "🤖 Starvell Repricer",
             "",
-            f"🧪 Dry-run: {mode}",
-            f"📌 Сейчас: {safety}",
+            "💰 Изменение цен:",
+            _price_change_state_line(dry_run=dry_run),
             SEPARATOR,
         ]
     )
@@ -365,12 +362,13 @@ def format_general_settings(
     request_limit: int,
     high_percent: int,
     normal_percent: int,
+    real_price_writes_enabled: bool = False,
+    price_write_endpoint_configured: bool = False,
     proxy_mode: str = "disabled",
     global_limit: int | None = None,
     group_infos: list[WorkerGroupInfo] | None = None,
     heartbeats: list[WorkerHeartbeat] | None = None,
 ) -> str:
-    mode = "включен" if dry_run else "выключен"
     if _use_proxy_ui(proxy_mode) and group_infos:
         heartbeat_by_group = {
             heartbeat.worker_group: heartbeat
@@ -380,7 +378,12 @@ def format_general_settings(
             SEPARATOR,
             "⚙️ Общие настройки",
             "",
-            f"🧪 Dry-run: {mode}",
+            "💰 Изменение цен:",
+            _price_change_state_line(
+                dry_run=dry_run,
+                real_price_writes_enabled=real_price_writes_enabled,
+                endpoint_configured=price_write_endpoint_configured,
+            ),
             "🌐 Режим запросов: прокси",
             f"🚦 Общий лимит: {global_limit or request_limit}/мин",
             f"🧠 Account effective limit: {_account_effective_limit(heartbeats or [], global_limit or request_limit)}/мин",
@@ -420,7 +423,12 @@ def format_general_settings(
             SEPARATOR,
             "⚙️ Общие настройки",
             "",
-            f"🧪 Dry-run: {mode}",
+            "💰 Изменение цен:",
+            _price_change_state_line(
+                dry_run=dry_run,
+                real_price_writes_enabled=real_price_writes_enabled,
+                endpoint_configured=price_write_endpoint_configured,
+            ),
             f"🚦 Общий лимит: {request_limit}/мин",
             "",
             "⚡ Распределение запросов",
@@ -442,6 +450,10 @@ def format_status(
     request_limit: int,
     high_percent: int,
     normal_percent: int,
+    real_price_writes_enabled: bool = False,
+    price_write_endpoint_configured: bool = False,
+    latest_price_update: tuple[PriceUpdateLog, Position | None] | None = None,
+    latest_price_write_error: tuple[PriceUpdateLog, Position | None] | None = None,
     high_count: int,
     normal_count: int,
     success_count: int,
@@ -486,8 +498,15 @@ def format_status(
         "📊 Статус репрайсера",
         "",
         f"🤖 Worker: {'работает' if is_running else 'не отвечает'}",
-        f"🧪 Dry-run: {'включен' if dry_run else 'выключен'}",
         f"🚦 Запросы: {request_usage}/{request_limit} за текущую минуту",
+        "",
+        *_price_write_status_lines(
+            dry_run=dry_run,
+            real_price_writes_enabled=real_price_writes_enabled,
+            endpoint_configured=price_write_endpoint_configured,
+            latest_price_update=latest_price_update,
+            latest_price_write_error=latest_price_write_error,
+        ),
         "",
         "⚡ Бюджет приоритетов",
         f"• Общий лимит: {request_limit}/мин",
@@ -531,6 +550,10 @@ def format_proxy_status(
     worker_states: list[WorkerState],
     heartbeats: list[WorkerHeartbeat],
     dry_run: bool,
+    real_price_writes_enabled: bool = False,
+    price_write_endpoint_configured: bool = False,
+    latest_price_update: tuple[PriceUpdateLog, Position | None] | None = None,
+    latest_price_write_error: tuple[PriceUpdateLog, Position | None] | None = None,
     request_usage: int,
     global_limit: int,
     group_infos: list[WorkerGroupInfo],
@@ -563,7 +586,14 @@ def format_proxy_status(
         "📊 Статус репрайсера",
         "",
         f"🤖 Worker: {'активен' if active_heartbeats else 'не отвечает'}",
-        f"🧪 Dry-run: {'включен' if dry_run else 'выключен'}",
+        "",
+        *_price_write_status_lines(
+            dry_run=dry_run,
+            real_price_writes_enabled=real_price_writes_enabled,
+            endpoint_configured=price_write_endpoint_configured,
+            latest_price_update=latest_price_update,
+            latest_price_write_error=latest_price_write_error,
+        ),
         "",
         "🌐 Режим: прокси",
         "",
@@ -574,6 +604,12 @@ def format_proxy_status(
         f"{account_effective_limit}/мин",
         "",
         "📡 Текущая нагрузка:",
+        *[
+            f"{info.icon} {info.label}: {_profile_usage(heartbeat_by_group.get(info.name))}/{_configured_limit(info, heartbeat_by_group.get(info.name))}"
+            for info in group_infos
+        ],
+        "",
+        "Итого:",
         f"{account_usage}/{account_effective_limit}",
         "",
         "📉 Backoff:",
@@ -678,6 +714,8 @@ def format_proxy_profiles(
     group_infos: list[WorkerGroupInfo],
     heartbeats: list[WorkerHeartbeat],
     dry_run: bool,
+    real_price_writes_enabled: bool = False,
+    price_write_endpoint_configured: bool = False,
     global_limit: int,
     proxy_mode: str = "enabled",
 ) -> str:
@@ -730,7 +768,12 @@ def format_proxy_profiles(
     lines.extend(
         [
             f"Общий лимит: {global_limit}/мин",
-            f"Dry-run: {'включен' if dry_run else 'выключен'}",
+            "Изменение цен:",
+            _price_change_state_line(
+                dry_run=dry_run,
+                real_price_writes_enabled=real_price_writes_enabled,
+                endpoint_configured=price_write_endpoint_configured,
+            ),
             f"Safe mode: {'включен' if safe_mode else 'выключен'}",
             SEPARATOR,
         ]
@@ -749,6 +792,8 @@ def format_worker_servers(
         group_infos=group_infos,
         heartbeats=heartbeats,
         dry_run=dry_run,
+        real_price_writes_enabled=False,
+        price_write_endpoint_configured=False,
         global_limit=global_limit,
     )
 
@@ -793,7 +838,7 @@ def format_logs(
         display_reason_key = inner_reason or reason_key
         display_reason = inner_reason or log.reason
         if log.status == UpdateStatus.DRY_RUN.value:
-            lines.append("🧪 Режим: dry-run")
+            lines.append("💰 Изменение цен: только анализ")
         lines.extend(
             [
                 f"📌 Статус: {_status_label(log.status)}",
@@ -862,10 +907,78 @@ def _check_hint(reason_key: str, status: str) -> str | None:
     if reason_key in CHECK_HINTS:
         return CHECK_HINTS[reason_key]
     if reason_key == "dry_run":
-        return "DRY_RUN=true, поэтому реальные цены не меняются"
+        return "включить реальные изменения и настроить endpoint записи"
+    if reason_key == "price_update_endpoint_missing":
+        return "MARKET_UPDATE_LOT_PRICE_URL и payload изменения цены"
+    if reason_key == "real_price_writes_disabled":
+        return "ENABLE_REAL_PRICE_WRITES и режим изменения цен"
+    if reason_key == "price_update_payload_unknown":
+        return "payload в DevTools -> Network при сохранении цены"
     if status in {"failed", "error"}:
         return "логи worker и настройки Starvell"
     return None
+
+
+def _price_change_state_line(
+    *,
+    dry_run: bool,
+    real_price_writes_enabled: bool = False,
+    endpoint_configured: bool = False,
+) -> str:
+    if dry_run:
+        return "❌ только анализ"
+    if real_price_writes_enabled and endpoint_configured:
+        return "✅ активно"
+    return "❌ только анализ"
+
+
+def _price_write_status_lines(
+    *,
+    dry_run: bool,
+    real_price_writes_enabled: bool,
+    endpoint_configured: bool,
+    latest_price_update: tuple[PriceUpdateLog, Position | None] | None,
+    latest_price_write_error: tuple[PriceUpdateLog, Position | None] | None,
+) -> list[str]:
+    ready = (not dry_run) and real_price_writes_enabled and endpoint_configured
+    if dry_run:
+        status = "заблокировано"
+        reason = "включен режим только анализа"
+    elif not real_price_writes_enabled:
+        status = "заблокировано"
+        reason = "ENABLE_REAL_PRICE_WRITES=false"
+    elif not endpoint_configured:
+        status = "заблокировано"
+        reason = "endpoint изменения цены не настроен"
+    else:
+        status = "готов"
+        reason = "все условия выполнены"
+
+    return [
+        "💰 Изменение цен",
+        f"• Режим: {'реальные изменения' if ready else 'только анализ'}",
+        f"• Endpoint: {'настроен' if endpoint_configured else 'отсутствует'}",
+        f"• Статус: {status}",
+        f"• Причина: {reason}",
+        f"• Последнее изменение: {_price_log_summary(latest_price_update)}",
+        f"• Последняя ошибка записи: {_price_log_summary(latest_price_write_error)}",
+    ]
+
+
+def _price_log_summary(item: tuple[PriceUpdateLog, Position | None] | None) -> str:
+    if item is None:
+        return "—"
+    log, position = item
+    position_text = (
+        f"{position.robux_amount} робуксов, ID {_lot_id_text(position)}"
+        if position
+        else f"позиция #{log.position_id}"
+    )
+    price_text = money(log.new_price)
+    reason = _reason_label(_reason_key(log.reason), log.reason) if log.reason else ""
+    if reason:
+        return f"{dt(log.created_at)} · {position_text} · {price_text} · {reason}"
+    return f"{dt(log.created_at)} · {position_text} · {price_text}"
 
 
 def _request_budget(request_limit: int, percent: int) -> int:

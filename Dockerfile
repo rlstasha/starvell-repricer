@@ -10,6 +10,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml README.md alembic.ini ./
+COPY check_price_write_config.py ./
 COPY alembic ./alembic
 COPY app ./app
 COPY scripts ./scripts

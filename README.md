@@ -2,7 +2,7 @@
 
 Репрайсер для раздела `Roblox -> Донат робуксов -> моментально`.
 
-Проект сделан в dry-run-first режиме: по умолчанию он считает новую цену и пишет в логи/БД, что бы изменил, но не отправляет изменение цены на сайт.
+Проект по умолчанию работает в режиме только анализа: считает новую цену и пишет в логи/БД, что бы изменил, но не отправляет изменение цены на сайт.
 
 ## Что уже реализовано
 
@@ -16,7 +16,7 @@
 - Фильтр конкурентов: рейтинг, отсутствие рейтинга, свой продавец, неактивный продавец.
 - Стратегия `undercut_by_1`: цена конкурента минус `step`, с ограничениями `min_price` и `max_price`.
 - Fallback: `keep_current` или `set_max_price`.
-- Telegram-бот с owner-only доступом, inline-меню, карточками позиций, статусом, логами и переключателем dry-run.
+- Telegram-бот с owner-only доступом, inline-меню, карточками позиций, статусом, логами и переключателем изменения цен.
 - Proxy profiles: `proxy_fast_1`, `proxy_fast_2`, `proxy_slow` с отдельными лимитами, Redis-lock и heartbeat.
 - Тесты pytest для ключевых сценариев.
 
@@ -28,8 +28,9 @@
 app/market/client.py
 ```
 
-Класс `StarvellClient` содержит безопасные GET-методы чтения данных и отдельный
-защитный метод записи цены, который сейчас намеренно блокирует любые изменения:
+Класс `StarvellClient` содержит методы чтения данных и единственный метод записи
+цены. Все обращения к Starvell, включая реальные изменения, проходят только через
+этот клиент:
 
 ```python
 check_connection()
@@ -59,8 +60,37 @@ MARKET_OFFERS_API_URL=/api/offers/list-by-category
 MARKET_OFFERS_LIMIT=100
 ```
 
-Реальное изменение цены на сайте пока не включено: `update_my_lot_price()`
-останавливается до любых POST/PATCH/PUT-запросов.
+Реальное изменение цены включается только при одновременном выполнении трех условий:
+
+```env
+DRY_RUN=false
+ENABLE_REAL_PRICE_WRITES=true
+MARKET_UPDATE_LOT_PRICE_URL=https://starvell.com/api/offers/{lot_id}/price
+```
+
+Endpoint изменения цены нужно взять из DevTools -> Network после ручного
+сохранения цены на Starvell. Cookie, session, csrf и token в документацию или
+Git добавлять нельзя.
+
+Безопасным чтением frontend-кода Starvell найден кандидат:
+
+```env
+MARKET_UPDATE_LOT_PRICE_URL=https://starvell.com/api/offers/{lot_id}/update
+MARKET_UPDATE_LOT_PRICE_METHOD=POST
+MARKET_UPDATE_PRICE_PAYLOAD_STYLE=price
+```
+
+Также в frontend-клиенте есть route:
+
+```env
+MARKET_UPDATE_LOT_PRICE_URL=https://starvell.com/api/offers/{lot_id}/partial-update
+MARKET_UPDATE_LOT_PRICE_METHOD=POST
+MARKET_UPDATE_PRICE_PAYLOAD_STYLE=price
+```
+
+Если Starvell отклонит `{"price": 123}`, значит update endpoint требует полный
+payload формы. Тогда откройте DevTools -> Network при ручном сохранении цены и
+перенесите подтвержденный URL/method/payload style.
 
 Текущий источник конкурентов:
 
@@ -189,12 +219,16 @@ python -m app.check_proxies
 Proxy login/password не пишутся в логи: показывается только маска вида
 `http://***:***@1.1.1.1:8000`.
 
-## Dry-run
+## Режим изменения цен
 
-Dry-run включен по умолчанию:
+Режим только анализа включен по умолчанию:
 
 ```env
 DRY_RUN=true
+ENABLE_REAL_PRICE_WRITES=false
+MARKET_UPDATE_LOT_PRICE_URL=
+MARKET_UPDATE_LOT_PRICE_METHOD=POST
+MARKET_UPDATE_PRICE_PAYLOAD_STYLE=auto
 ```
 
 Первое значение берется из `.env` и сохраняется в таблицу `app_settings`. Дальше режим можно переключать кнопкой в Telegram-боте без перезапуска контейнеров.
@@ -202,14 +236,46 @@ DRY_RUN=true
 В этом режиме worker:
 
 - получает/считает данные;
-- пишет лог `repricer_dry_run_price_update`;
+- пишет лог расчета цены;
 - сохраняет расчет в БД;
 - не вызывает реальное обновление цены на сайте.
 
-Чтобы разрешить реальные изменения после реализации API:
+Чтобы разрешить реальные изменения:
 
 ```env
 DRY_RUN=false
+ENABLE_REAL_PRICE_WRITES=true
+MARKET_UPDATE_LOT_PRICE_URL=https://starvell.com/api/offers/{lot_id}/update
+MARKET_UPDATE_LOT_PRICE_METHOD=POST
+MARKET_UPDATE_PRICE_PAYLOAD_STYLE=price
+```
+
+Поддерживаемые payload style:
+
+```text
+price  -> {"price": 123}
+amount -> {"amount": 123}
+cost   -> {"cost": 123}
+auto   -> {"price": 123}
+```
+
+Проверка настройки:
+
+```bash
+python -m app.check_price_write_config
+```
+
+Безопасный просмотр тестового запроса:
+
+```bash
+python -m app.test_price_update --lot-id 2000 --price 123
+```
+
+Реальная отправка выполняется только с `--confirm` и только если включены все
+переменные выше:
+
+```bash
+python -m app.test_price_update --lot-id 2000 --price 123 --confirm
 ```
 
 ## Запуск через Docker
@@ -347,7 +413,7 @@ docker compose up bot
 - `⚙️ Общие настройки`
 - `📊 Статус`
 - `📊 Прокси и лимиты`
-- `🧪 Dry-run включить/выключить`
+- `💰 Включить изменение цен` / `🛑 Остановить изменение цен`
 - `📝 Логи последних действий`
 
 Доступ есть у всех пользователей из `OWNER_TELEGRAM_IDS`:

@@ -332,6 +332,24 @@ class PositionRepository:
         )
         return [(log, position) for log, position in result.all()]
 
+    async def get_latest_price_log_with_position(
+        self,
+        status: str | UpdateStatus,
+    ) -> tuple[PriceUpdateLog, Position | None] | None:
+        status_value = status.value if isinstance(status, UpdateStatus) else status
+        result = await self.session.execute(
+            select(PriceUpdateLog, Position)
+            .join(Position, Position.id == PriceUpdateLog.position_id, isouter=True)
+            .where(PriceUpdateLog.status == status_value)
+            .order_by(PriceUpdateLog.created_at.desc())
+            .limit(1)
+        )
+        row = result.first()
+        if row is None:
+            return None
+        log, position = row
+        return log, position
+
     async def count_by_priority(self, *, enabled_only: bool = False) -> dict[str, int]:
         query = select(Position.priority, func.count()).group_by(Position.priority)
         if enabled_only:

@@ -9,6 +9,11 @@ from app.core.logging import get_logger
 from app.db.models import Position, UpdateStatus
 from app.db.repositories import PositionRepository
 from app.market.client import StarvellClient, safe_starvell_error_reason
+from app.market.exceptions import (
+    StarvellEndpointNotConfiguredError,
+    StarvellPayloadStyleError,
+    StarvellWriteDisabledError,
+)
 from app.market.schemas import MarketOffer, OwnLot
 from app.repricer.competitor_filter import CompetitorFilter, CompetitorFilterSettings
 from app.repricer.price_strategy import PriceCalculationSettings, PriceDecision, UndercutByStepStrategy
@@ -57,12 +62,22 @@ class RepricerEngine:
             await self.session.rollback()
             reason = safe_starvell_error_reason(exc)
             await self._persist_failure(position_amount, exc, reason)
-            self.logger.exception(
-                "repricer_position_failed",
-                proxy_profile=self.settings.worker_group,
-                position_amount=position_amount,
-                error=reason,
-            )
+            log_context = {
+                "proxy_profile": self.settings.worker_group,
+                "position_amount": position_amount,
+                "error": reason,
+            }
+            if isinstance(
+                exc,
+                (
+                    StarvellEndpointNotConfiguredError,
+                    StarvellPayloadStyleError,
+                    StarvellWriteDisabledError,
+                ),
+            ):
+                self.logger.warning("repricer_position_failed", **log_context)
+            else:
+                self.logger.exception("repricer_position_failed", **log_context)
             return ProcessResult(position_amount, "failed", reason, None, None, None)
 
     async def _process_loaded_position(self, position: Position) -> ProcessResult:
@@ -197,6 +212,7 @@ class RepricerEngine:
             position.robux_amount,
             position.lot_id,
             decision.target_price,
+            allow_real_write=not self.dry_run,
         )
         await self._record_decision(
             position=position,
@@ -210,6 +226,7 @@ class RepricerEngine:
             "repricer_price_updated",
             proxy_profile=self.settings.worker_group,
             position_amount=position.robux_amount,
+            lot_id=position.lot_id,
             old_price=str(current_price),
             new_price=str(decision.target_price),
             competitor_price=str(decision.competitor_price),

@@ -47,6 +47,8 @@ async def general_settings(
             request_limit=settings.request_limit_per_minute,
             high_percent=settings.high_priority_percent,
             normal_percent=settings.normal_priority_percent,
+            real_price_writes_enabled=settings.enable_real_price_writes,
+            price_write_endpoint_configured=bool(settings.market_update_lot_price_url),
             proxy_mode=settings.proxy_mode,
             global_limit=settings.global_request_limit_per_minute,
             group_infos=settings.worker_group_infos,
@@ -71,7 +73,11 @@ async def toggle_dry_run(
         await session.commit()
         new_value = not current
 
-    text = "Dry-run включен." if new_value else "Dry-run выключен."
+    text = (
+        "Изменение цен остановлено. Сейчас работает только анализ."
+        if new_value
+        else "Изменение цен включено. Реальная запись сработает только при настроенном endpoint."
+    )
     await safe_edit_text(
         callback,
         text,
@@ -117,6 +123,8 @@ async def show_status(
         success_count = await positions.count_price_logs(UpdateStatus.SUCCESS)
         error_count = await positions.count_price_logs(UpdateStatus.FAILED)
         recent_errors = await positions.list_recent_errors_with_positions(limit=5)
+        latest_price_update = await positions.get_latest_price_log_with_position(UpdateStatus.SUCCESS)
+        latest_price_write_error = await positions.get_latest_price_log_with_position(UpdateStatus.FAILED)
         priority_counts = await positions.count_by_priority(enabled_only=True)
         all_positions = await positions.list_positions()
         positions_by_amount = {
@@ -134,6 +142,10 @@ async def show_status(
             worker_states=worker_states,
             heartbeats=heartbeats,
             dry_run=dry_run,
+            real_price_writes_enabled=settings.enable_real_price_writes,
+            price_write_endpoint_configured=bool(settings.market_update_lot_price_url),
+            latest_price_update=latest_price_update,
+            latest_price_write_error=latest_price_write_error,
             request_usage=request_usage,
             global_limit=settings.global_request_limit_per_minute,
             group_infos=settings.worker_group_infos,
@@ -146,6 +158,10 @@ async def show_status(
         text = format_status(
             worker_state=worker_state,
             dry_run=dry_run,
+            real_price_writes_enabled=settings.enable_real_price_writes,
+            price_write_endpoint_configured=bool(settings.market_update_lot_price_url),
+            latest_price_update=latest_price_update,
+            latest_price_write_error=latest_price_write_error,
             request_usage=request_usage,
             request_limit=settings.request_limit_per_minute,
             high_percent=settings.high_priority_percent,
@@ -185,6 +201,8 @@ async def show_proxy_profiles(
             group_infos=settings.worker_group_infos,
             heartbeats=heartbeats,
             dry_run=dry_run,
+            real_price_writes_enabled=settings.enable_real_price_writes,
+            price_write_endpoint_configured=bool(settings.market_update_lot_price_url),
             global_limit=settings.global_request_limit_per_minute,
             proxy_mode=settings.proxy_mode,
         ),

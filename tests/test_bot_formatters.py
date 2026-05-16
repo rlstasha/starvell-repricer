@@ -122,7 +122,9 @@ def test_worker_servers_show_new_fast_split_and_frequency() -> None:
     assert "🐢 Slow" in text
     assert "Частота: 4.5–6.5 сек" in text
     assert "203.0.113.10" in text
-    assert "Dry-run: включен" in text
+    assert "Изменение цен:" in text
+    assert "только анализ" in text
+    assert "Dry-run" not in text
 
 
 def test_proxy_profiles_use_direct_worker_heartbeat_as_fallback() -> None:
@@ -191,6 +193,8 @@ def test_general_settings_are_proxy_aware() -> None:
     assert "🌐 Режим запросов: прокси" in text
     assert "🚦 Общий лимит: 300/мин" in text
     assert "🧠 Account effective limit: 300/мин" in text
+    assert "💰 Изменение цен:" in text
+    assert "❌ только анализ" in text
     assert "🚀 Fast 1" in text
     assert "500 · 800 · 1000" in text
     assert "High:" not in text
@@ -234,6 +238,8 @@ def test_proxy_status_does_not_show_high_normal_budget() -> None:
     assert "🌐 Режим: прокси" in text
     assert "Proxy capacity:" in text
     assert "300/мин" in text
+    assert "💰 Изменение цен" in text
+    assert "Режим: только анализ" in text
     assert "🚀 Fast 2" in text
     assert "IP: 45.132.20.205" in text
     assert "Последняя позиция: 400 робуксов, ID 1999" in text
@@ -368,6 +374,39 @@ def test_proxy_status_explains_safe_mode_without_technical_links() -> None:
     assert "Запросов: 38/300" in text
     assert "Следующая попытка: через" in text
     assert "developer.mozilla.org" not in text
+
+
+def test_proxy_status_shows_price_write_ready_state() -> None:
+    settings = Settings(_env_file=None)
+    success_log = PriceUpdateLog(
+        position_id=1,
+        status=UpdateStatus.SUCCESS.value,
+        reason="competitor_undercut",
+        new_price=Decimal("315.00"),
+        created_at=datetime(2026, 5, 15, 19, 10, tzinfo=UTC),
+    )
+
+    text = format_proxy_status(
+        worker_states=[],
+        heartbeats=[],
+        dry_run=False,
+        real_price_writes_enabled=True,
+        price_write_endpoint_configured=True,
+        latest_price_update=(success_log, _position(500, "2000")),
+        request_usage=0,
+        global_limit=settings.global_request_limit_per_minute,
+        group_infos=settings.worker_group_infos,
+        success_count=1,
+        error_count=0,
+        recent_errors=[],
+        last_positions_by_amount={},
+    )
+
+    assert "💰 Изменение цен" in text
+    assert "Режим: реальные изменения" in text
+    assert "Endpoint: настроен" in text
+    assert "Статус: готов" in text
+    assert "500 робуксов, ID 2000" in text
 
 
 def test_logs_show_proxy_group_and_missing_reason_text() -> None:
