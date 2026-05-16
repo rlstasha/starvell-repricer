@@ -21,6 +21,7 @@ from app.market.schemas import (
     MarketOffer,
     MyLotSummary,
     OwnLot,
+    PriceUpdateAttemptResult,
     StarvellConnectionCheck,
     UpdateResult,
 )
@@ -111,6 +112,12 @@ class MarketOffersFetchResult:
     offers: list[MarketOffer]
     subcategory_id: int | None = None
     parser_rejected_count: int = 0
+
+
+@dataclass(frozen=True)
+class PriceUpdatePayloadCandidate:
+    name: str
+    payload: dict[str, Any]
 
 
 class StarvellClient:
@@ -419,8 +426,259 @@ class StarvellClient:
         new_price: Decimal,
         *,
         allow_real_write: bool | None = None,
+        payload_override: dict[str, Any] | None = None,
+        payload_style: str | None = None,
+        content_type: str | None = None,
+        variant_name: str | None = None,
     ) -> UpdateResult:
         """Update an own lot price through the configured Starvell write endpoint."""
+        self._ensure_price_write_allowed(lot_id, allow_real_write=allow_real_write)
+        method = self.settings.market_update_lot_price_method
+        url = _format_price_update_url(
+            self.settings.market_update_lot_price_url,
+            lot_id=str(lot_id),
+            position_amount=position_amount,
+        )
+        style = payload_style or self.settings.market_update_price_payload_style
+        context: dict[str, Any] | None = None
+        if not payload_override and _price_update_style_needs_context(style):
+            context = await self.get_price_update_context(position_amount, str(lot_id))
+        payload = payload_override or _price_update_payload(
+            new_price,
+            style=style,
+            lot_id=str(lot_id),
+            position_amount=position_amount,
+            context=context,
+        )
+        request_content_type = content_type or self.settings.market_update_price_content_type
+
+        if self.settings.price_write_discovery:
+            self.logger.info(
+                "starvell_price_write_discovery",
+                method=method,
+                url=url,
+                payload=_sanitize_payload(payload),
+                payload_style=style,
+                content_type=request_content_type,
+                variant=variant_name,
+                proxy_profile=self.proxy_profile or "direct",
+                proxy=mask_proxy_url(self.proxy_url),
+            )
+
+        try:
+            response = await self._send_price_update_request(
+                method=method,
+                url=url,
+                payload=payload,
+                content_type=request_content_type,
+            )
+        except httpx.HTTPStatusError as exc:
+            debug_extra = (
+                _debug_response_fields(exc.response, self.settings)
+                if self.settings.price_write_discovery
+                else {}
+            )
+            self.logger.warning(
+                "price_update_failed",
+                position=position_amount,
+                lot_id=str(lot_id),
+                new_price=str(new_price),
+                reason=safe_starvell_error_reason(exc),
+                status_code=exc.response.status_code,
+                method=method,
+                url=url,
+                payload=_sanitize_payload(payload),
+                content_type=request_content_type,
+                variant=variant_name,
+                proxy=self.proxy_profile or "direct",
+                **debug_extra,
+            )
+            raise
+        except Exception as exc:
+            self.logger.warning(
+                "price_update_failed",
+                position=position_amount,
+                lot_id=str(lot_id),
+                new_price=str(new_price),
+                reason=safe_starvell_error_reason(exc),
+                status_code=None,
+                method=method,
+                url=url,
+                payload=_sanitize_payload(payload),
+                content_type=request_content_type,
+                variant=variant_name,
+                proxy=self.proxy_profile or "direct",
+            )
+            raise
+
+        raw_payload: dict[str, Any] | None = None
+        try:
+            payload_response = response.json()
+        except ValueError:
+            payload_response = None
+        if isinstance(payload_response, dict):
+            raw_payload = payload_response
+
+        self.logger.info(
+            "price_updated",
+            position=position_amount,
+            lot_id=str(lot_id),
+            new_price=str(new_price),
+            method=method,
+            url=url,
+            payload_style=style,
+            content_type=request_content_type,
+            variant=variant_name,
+            proxy=self.proxy_profile or "direct",
+            status="success",
+        )
+        return UpdateResult(success=True, raw_payload=raw_payload)
+
+    async def debug_my_lot_price_update(
+        self,
+        position_amount: int,
+        lot_id: str | None,
+        new_price: Decimal,
+        *,
+        allow_real_write: bool | None = None,
+    ) -> list[PriceUpdateAttemptResult]:
+        """Try known Starvell price payload shapes and return safe request diagnostics."""
+        self._ensure_price_write_allowed(lot_id, allow_real_write=allow_real_write)
+        method = self.settings.market_update_lot_price_method
+        url = _format_price_update_url(
+            self.settings.market_update_lot_price_url,
+            lot_id=str(lot_id),
+            position_amount=position_amount,
+        )
+        context = await self.get_price_update_context(position_amount, str(lot_id))
+        candidates = _price_update_payload_candidates(
+            new_price,
+            context=context,
+            lot_id=str(lot_id),
+            position_amount=position_amount,
+        )
+        results: list[PriceUpdateAttemptResult] = []
+
+        for candidate in candidates:
+            for request_content_type in ("json", "form"):
+                try:
+                    response = await self._send_price_update_request(
+                        method=method,
+                        url=url,
+                        payload=candidate.payload,
+                        content_type=request_content_type,
+                    )
+                except httpx.HTTPStatusError as exc:
+                    attempt = _price_update_attempt_result(
+                        candidate=candidate,
+                        method=method,
+                        url=url,
+                        content_type=request_content_type,
+                        response=exc.response,
+                        settings=self.settings,
+                        reason=safe_starvell_error_reason(exc),
+                    )
+                    self._log_price_update_attempt(attempt)
+                    results.append(attempt)
+                    if exc.response.status_code in {401, 403, 429} or exc.response.status_code >= 500:
+                        return results
+                    continue
+                except Exception as exc:
+                    attempt = PriceUpdateAttemptResult(
+                        variant=candidate.name,
+                        method=method,
+                        url=url,
+                        request_content_type=_request_content_type_label(request_content_type),
+                        payload=_sanitize_payload(candidate.payload),
+                        status_code=None,
+                        success=False,
+                        reason=safe_starvell_error_reason(exc),
+                    )
+                    self._log_price_update_attempt(attempt)
+                    results.append(attempt)
+                    return results
+
+                attempt = _price_update_attempt_result(
+                    candidate=candidate,
+                    method=method,
+                    url=url,
+                    content_type=request_content_type,
+                    response=response,
+                    settings=self.settings,
+                    reason=None,
+                )
+                self._log_price_update_attempt(attempt)
+                results.append(attempt)
+                if response.status_code < 400:
+                    return results
+
+        return results
+
+    async def get_price_update_context(
+        self,
+        position_amount: int,
+        lot_id: str,
+    ) -> dict[str, Any]:
+        """Pull non-secret offer fields from safe GET pages for diagnostic write payloads."""
+        context: dict[str, Any] = {}
+        for path in (f"/offers/{lot_id}", f"/offers/edit/{lot_id}"):
+            try:
+                response = await self._request(
+                    "GET",
+                    path,
+                    request_type="price_update_context",
+                )
+            except httpx.HTTPStatusError:
+                continue
+            except Exception:
+                continue
+            offer_payload = _extract_offer_payload_from_html(response.text, lot_id=lot_id)
+            if offer_payload:
+                context.update(_price_update_context_from_offer_payload(offer_payload))
+
+        context.setdefault("id", str(lot_id))
+        context.setdefault("offer_id", str(lot_id))
+        context.setdefault("offerId", str(lot_id))
+        if self.settings.own_seller_id:
+            context.setdefault("seller_id", self.settings.own_seller_id)
+            context.setdefault("sellerId", self.settings.own_seller_id)
+        if position_amount > 0:
+            context.setdefault("position_amount", position_amount)
+            context.setdefault("positionAmount", position_amount)
+        if self.settings.market_csrf_token:
+            context.setdefault("csrf", self.settings.market_csrf_token)
+            context.setdefault("_csrf", self.settings.market_csrf_token)
+        return context
+
+    async def _send_price_update_request(
+        self,
+        *,
+        method: str,
+        url: str,
+        payload: dict[str, Any],
+        content_type: str,
+    ) -> httpx.Response:
+        normalized_content_type = content_type.strip().lower()
+        if normalized_content_type == "form":
+            return await self._request(
+                method,
+                url,
+                request_type="price_update",
+                data=_form_payload(payload),
+            )
+        return await self._request(
+            method,
+            url,
+            request_type="price_update",
+            json=payload,
+        )
+
+    def _ensure_price_write_allowed(
+        self,
+        lot_id: str | None,
+        *,
+        allow_real_write: bool | None,
+    ) -> None:
         if not lot_id:
             raise StarvellEndpointNotConfiguredError("Не найден ID лота для изменения цены")
 
@@ -438,75 +696,22 @@ class StarvellClient:
                 "Реальное изменение цены отключено: не настроен MARKET_UPDATE_LOT_PRICE_URL"
             )
 
-        method = self.settings.market_update_lot_price_method
-        url = _format_price_update_url(
-            self.settings.market_update_lot_price_url,
-            lot_id=lot_id,
-            position_amount=position_amount,
-        )
-        payload = _price_update_payload(
-            new_price,
-            style=self.settings.market_update_price_payload_style,
-        )
-
-        if self.settings.price_write_discovery:
-            self.logger.info(
-                "starvell_price_write_discovery",
-                method=method,
-                url=url,
-                payload=payload,
-                payload_style=self.settings.market_update_price_payload_style,
-                proxy_profile=self.proxy_profile or "direct",
-                proxy=mask_proxy_url(self.proxy_url),
-            )
-
-        try:
-            response = await self._request(
-                method,
-                url,
-                request_type="price_update",
-                json=payload,
-            )
-        except httpx.HTTPStatusError as exc:
-            self.logger.warning(
-                "price_update_failed",
-                position=position_amount,
-                lot_id=lot_id,
-                new_price=str(new_price),
-                reason=safe_starvell_error_reason(exc),
-                status_code=exc.response.status_code,
-                proxy=self.proxy_profile or "direct",
-            )
-            raise
-        except Exception as exc:
-            self.logger.warning(
-                "price_update_failed",
-                position=position_amount,
-                lot_id=lot_id,
-                new_price=str(new_price),
-                reason=safe_starvell_error_reason(exc),
-                status_code=None,
-                proxy=self.proxy_profile or "direct",
-            )
-            raise
-
-        raw_payload: dict[str, Any] | None = None
-        try:
-            payload_response = response.json()
-        except ValueError:
-            payload_response = None
-        if isinstance(payload_response, dict):
-            raw_payload = payload_response
-
-        self.logger.info(
-            "price_updated",
-            position=position_amount,
-            lot_id=lot_id,
-            new_price=str(new_price),
+    def _log_price_update_attempt(self, attempt: PriceUpdateAttemptResult) -> None:
+        self.logger.warning(
+            "price_update_debug_attempt",
+            variant=attempt.variant,
+            method=attempt.method,
+            url=attempt.url,
+            content_type=attempt.request_content_type,
+            payload=attempt.payload,
+            status_code=attempt.status_code,
+            response_content_type=attempt.response_content_type,
+            response_headers=attempt.response_headers,
+            response_body=attempt.response_body,
+            success=attempt.success,
+            reason=attempt.reason,
             proxy=self.proxy_profile or "direct",
-            status="success",
         )
-        return UpdateResult(success=True, raw_payload=raw_payload)
 
     async def get_account_info(self) -> AccountInfo:
         """Fetch account information through the configured safe GET endpoint."""
@@ -614,14 +819,36 @@ def _format_price_update_url(
     )
 
 
-def _price_update_payload(price: Decimal, *, style: str) -> dict[str, int | float]:
+def _price_update_payload(
+    price: Decimal,
+    *,
+    style: str,
+    lot_id: str | None = None,
+    position_amount: int | None = None,
+    context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     normalized = style.strip().lower()
+    if normalized == "partial_update":
+        return _partial_update_payload(price, context=context or {})
+    if normalized == "bulk":
+        return _bulk_update_payload(price, lot_id=lot_id, position_amount=position_amount)
+
     field_by_style = {
         "auto": "price",
         "price": "price",
         "amount": "amount",
         "cost": "cost",
+        "offer_price": "offer_price",
+        "new_price": "new_price",
+        "price_value": "price_value",
     }
+    string_field_by_style = {
+        "price_string": "price",
+        "amount_string": "amount",
+    }
+    if normalized in string_field_by_style:
+        return {string_field_by_style[normalized]: _string_price_value(price)}
+
     field_name = field_by_style.get(normalized)
     if field_name is None:
         raise StarvellPayloadStyleError(
@@ -630,11 +857,395 @@ def _price_update_payload(price: Decimal, *, style: str) -> dict[str, int | floa
     return {field_name: _json_price_value(price)}
 
 
+def _price_update_style_needs_context(style: str) -> bool:
+    return style.strip().lower() == "partial_update"
+
+
+def _partial_update_payload(price: Decimal, *, context: dict[str, Any]) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "availability": _context_int(context, ("availability", "stock", "quantity")),
+        "price": _string_price_value(price),
+        "minOrderCurrencyAmount": _context_optional_number(
+            context,
+            ("minOrderCurrencyAmount", "min_order_currency_amount", "minOrderAmount"),
+        ),
+        "isActive": _context_bool(context, ("isActive", "is_active", "active"), default=True),
+    }
+    if _context_bool(context, ("instantDelivery", "instant_delivery"), default=False):
+        payload["availability"] = None
+    if payload["availability"] is None:
+        payload.pop("availability")
+    return payload
+
+
+def _bulk_update_payload(
+    price: Decimal,
+    *,
+    lot_id: str | None,
+    position_amount: int | None,
+) -> dict[str, Any]:
+    item: dict[str, Any] = {
+        "lot_id": _numeric_string_or_text(lot_id),
+        "price": _json_price_value(price),
+    }
+    if position_amount:
+        item["position_amount"] = position_amount
+    return {"offers": [item]}
+
+
 def _json_price_value(price: Decimal) -> int | float:
     normalized = price.quantize(Decimal("0.01"))
     if normalized == normalized.to_integral_value():
         return int(normalized)
     return float(normalized)
+
+
+def _string_price_value(price: Decimal) -> str:
+    normalized = price.quantize(Decimal("0.01"))
+    if normalized == normalized.to_integral_value():
+        return str(int(normalized))
+    return format(normalized, "f")
+
+
+def _price_update_payload_candidates(
+    price: Decimal,
+    *,
+    context: dict[str, Any] | None = None,
+    lot_id: str | None = None,
+    position_amount: int | None = None,
+) -> list[PriceUpdatePayloadCandidate]:
+    base_payloads = [
+        ("price_number", {"price": _json_price_value(price)}),
+        ("amount_number", {"amount": _json_price_value(price)}),
+        ("cost_number", {"cost": _json_price_value(price)}),
+        ("offer_price_number", {"offer_price": _json_price_value(price)}),
+        ("new_price_number", {"new_price": _json_price_value(price)}),
+        ("price_value_number", {"price_value": _json_price_value(price)}),
+        ("price_string", {"price": _string_price_value(price)}),
+        ("amount_string", {"amount": _string_price_value(price)}),
+    ]
+    clean_context = _clean_price_update_context(context or {})
+    candidates: list[PriceUpdatePayloadCandidate] = []
+    if clean_context:
+        candidates.append(
+            PriceUpdatePayloadCandidate(
+                name="partial_update_from_my_offers_page",
+                payload=_partial_update_payload(price, context=clean_context),
+            )
+        )
+    candidates.append(
+        PriceUpdatePayloadCandidate(
+            name="bulk_offers_array",
+            payload=_bulk_update_payload(
+                price,
+                lot_id=lot_id,
+                position_amount=position_amount,
+            ),
+        )
+    )
+    candidates.extend(
+        PriceUpdatePayloadCandidate(name=name, payload=payload)
+        for name, payload in base_payloads
+    )
+    if clean_context:
+        for name, payload in base_payloads:
+            candidates.append(
+                PriceUpdatePayloadCandidate(
+                    name=f"{name}_with_offer_context",
+                    payload={**clean_context, **payload},
+                )
+            )
+    return candidates
+
+
+def _clean_price_update_context(context: dict[str, Any]) -> dict[str, Any]:
+    allowed_keys = {
+        "id",
+        "offer_id",
+        "offerId",
+        "currency",
+        "category_id",
+        "categoryId",
+        "sub_category_id",
+        "subCategoryId",
+        "seller_id",
+        "sellerId",
+        "availability",
+        "stock",
+        "quantity",
+        "isActive",
+        "is_active",
+        "active",
+        "instantDelivery",
+        "instant_delivery",
+        "minOrderCurrencyAmount",
+        "min_order_currency_amount",
+        "minOrderAmount",
+        "csrf",
+        "_csrf",
+    }
+    clean: dict[str, Any] = {}
+    for key in allowed_keys:
+        value = context.get(key)
+        if value is None or value == "":
+            continue
+        if isinstance(value, (str, int, float, bool)):
+            clean[key] = value
+    return clean
+
+
+def _form_payload(payload: dict[str, Any]) -> dict[str, str]:
+    form: dict[str, str] = {}
+    for key, value in payload.items():
+        if value is None:
+            continue
+        if isinstance(value, bool):
+            form[key] = "true" if value else "false"
+        else:
+            form[key] = str(value)
+    return form
+
+
+def _request_content_type_label(content_type: str) -> str:
+    if content_type.strip().lower() == "form":
+        return "application/x-www-form-urlencoded"
+    return "application/json"
+
+
+def _extract_offer_payload_from_html(html: str, *, lot_id: str) -> dict[str, Any] | None:
+    page_props = _extract_next_page_props(html)
+    offer = page_props.get("offer")
+    if isinstance(offer, dict) and _payload_matches_lot_id(offer, lot_id):
+        return offer
+
+    for item in _find_embedded_lot_items(html_module.unescape(html).replace("\\/", "/")):
+        if _payload_matches_lot_id(item, lot_id):
+            return item
+    return None
+
+
+def _payload_matches_lot_id(payload: dict[str, Any], lot_id: str) -> bool:
+    parsed_lot_id = _find_direct_string(
+        payload,
+        ("id", "lot_id", "lotId", "listing_id", "listingId", "offer_id", "offerId"),
+    )
+    return parsed_lot_id is None or str(parsed_lot_id) == str(lot_id)
+
+
+def _price_update_context_from_offer_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    context: dict[str, Any] = {}
+    lot_id = _find_direct_string(
+        payload,
+        ("id", "lot_id", "lotId", "listing_id", "listingId", "offer_id", "offerId"),
+    )
+    if lot_id:
+        context["id"] = lot_id
+        context["offer_id"] = lot_id
+        context["offerId"] = lot_id
+
+    _set_context_value(context, "currency", _find_direct_string(payload, ("currency",)))
+    _set_context_value(context, "isActive", _find_first_bool(payload, ("isActive", "is_active", "active")))
+    _set_context_value(
+        context,
+        "instantDelivery",
+        _find_first_bool(payload, ("instantDelivery", "instant_delivery")),
+    )
+    _set_context_value(
+        context,
+        "minOrderCurrencyAmount",
+        _find_direct_decimal(
+            payload,
+            ("minOrderCurrencyAmount", "min_order_currency_amount", "minOrderAmount"),
+        ),
+    )
+    _set_context_value(
+        context,
+        "availability",
+        _find_direct_int(payload, ("availability", "stock", "quantity")),
+    )
+    _set_context_value(context, "stock", _find_direct_int(payload, ("stock",)))
+    _set_context_value(context, "quantity", _find_direct_int(payload, ("quantity",)))
+
+    category_id = _find_direct_string(payload, ("category_id", "categoryId"))
+    category = payload.get("category")
+    if not category_id and isinstance(category, dict):
+        category_id = _find_direct_string(category, ("id", "category_id", "categoryId"))
+    if category_id:
+        context["category_id"] = category_id
+        context["categoryId"] = category_id
+
+    sub_category_id = _find_direct_string(
+        payload,
+        ("sub_category_id", "subCategoryId", "subcategory_id", "subcategoryId"),
+    )
+    sub_category = payload.get("subCategory") or payload.get("subcategory")
+    if not sub_category_id and isinstance(sub_category, dict):
+        sub_category_id = _find_direct_string(
+            sub_category,
+            ("id", "sub_category_id", "subCategoryId", "subcategory_id", "subcategoryId"),
+        )
+    if sub_category_id:
+        context["sub_category_id"] = sub_category_id
+        context["subCategoryId"] = sub_category_id
+
+    seller_id = _find_direct_string(
+        payload,
+        ("seller_id", "sellerId", "seller_user_id", "sellerUserId", "user_id", "userId"),
+    )
+    user = payload.get("user")
+    if not seller_id and isinstance(user, dict):
+        seller_id = _find_direct_string(
+            user,
+            ("id", "seller_id", "sellerId", "user_id", "userId"),
+        )
+    if seller_id:
+        context["seller_id"] = seller_id
+        context["sellerId"] = seller_id
+
+    return context
+
+
+def _set_context_value(context: dict[str, Any], key: str, value: Any) -> None:
+    if value is not None and value != "":
+        context[key] = value
+
+
+def _context_int(context: dict[str, Any], keys: tuple[str, ...]) -> int | None:
+    for key in keys:
+        value = context.get(key)
+        if value is None or value == "":
+            continue
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _context_bool(context: dict[str, Any], keys: tuple[str, ...], *, default: bool) -> bool:
+    for key in keys:
+        value = context.get(key)
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"true", "1", "yes", "active", "enabled"}:
+                return True
+            if normalized in {"false", "0", "no", "inactive", "disabled"}:
+                return False
+        if isinstance(value, int):
+            return value != 0
+    return default
+
+
+def _context_optional_number(context: dict[str, Any], keys: tuple[str, ...]) -> int | float | None:
+    for key in keys:
+        value = context.get(key)
+        if value is None or value == "":
+            continue
+        try:
+            decimal_value = Decimal(str(value))
+        except Exception:
+            continue
+        return _json_price_value(decimal_value)
+    return None
+
+
+def _numeric_string_or_text(value: str | None) -> int | str | None:
+    if value is None:
+        return None
+    text = str(value)
+    return int(text) if text.isdigit() else text
+
+
+def _price_update_attempt_result(
+    *,
+    candidate: PriceUpdatePayloadCandidate,
+    method: str,
+    url: str,
+    content_type: str,
+    response: httpx.Response,
+    settings: Settings,
+    reason: str | None,
+) -> PriceUpdateAttemptResult:
+    return PriceUpdateAttemptResult(
+        variant=candidate.name,
+        method=method,
+        url=url,
+        request_content_type=_request_content_type_label(content_type),
+        payload=_sanitize_payload(candidate.payload),
+        status_code=response.status_code,
+        response_content_type=response.headers.get("content-type", ""),
+        response_headers=_safe_response_headers(response.headers),
+        response_body=_safe_response_body(response.text, settings),
+        success=response.status_code < 400,
+        reason=reason,
+    )
+
+
+def _debug_response_fields(response: httpx.Response, settings: Settings) -> dict[str, Any]:
+    return {
+        "response_content_type": response.headers.get("content-type", ""),
+        "response_headers": _safe_response_headers(response.headers),
+        "response_body": _safe_response_body(response.text, settings),
+    }
+
+
+def _safe_response_headers(headers: httpx.Headers) -> dict[str, str]:
+    unsafe_names = {
+        "set-cookie",
+        "cookie",
+        "authorization",
+        "proxy-authorization",
+        "x-csrf-token",
+        "csrf-token",
+    }
+    safe: dict[str, str] = {}
+    for key, value in headers.items():
+        normalized = key.lower()
+        if normalized in unsafe_names or any(part in normalized for part in ("token", "secret")):
+            safe[key] = "***"
+        else:
+            safe[key] = value
+    return safe
+
+
+def _safe_response_body(text: str, settings: Settings, *, max_chars: int = 20000) -> str:
+    sanitized = _sanitize_text(text, settings)
+    if len(sanitized) <= max_chars:
+        return sanitized
+    return sanitized[:max_chars] + "\n... [response body truncated]"
+
+
+def _sanitize_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: _sanitize_value(key, value)
+        for key, value in payload.items()
+    }
+
+
+def _sanitize_value(key: str, value: Any) -> Any:
+    lowered = key.lower()
+    if any(marker in lowered for marker in ("cookie", "session", "csrf", "token", "secret", "password")):
+        return "***"
+    if isinstance(value, dict):
+        return _sanitize_payload(value)
+    if isinstance(value, list):
+        return [_sanitize_value(key, item) for item in value]
+    return value
+
+
+def _sanitize_text(text: str, settings: Settings) -> str:
+    sanitized = text
+    secret_values = [
+        settings.market_session_cookie,
+        settings.market_csrf_token,
+        settings.market_api_token,
+    ]
+    for secret in secret_values:
+        if secret:
+            sanitized = sanitized.replace(secret, "***")
+    return sanitized
 
 
 def _error_kind_from_status(status_code: int) -> str | None:

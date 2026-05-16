@@ -47,7 +47,8 @@ class Settings(BaseSettings):
     enable_real_price_writes: bool = False
     market_update_lot_price_url: str = ""
     market_update_lot_price_method: str = "POST"
-    market_update_price_payload_style: str = "auto"
+    market_update_price_payload_style: str = "partial_update"
+    market_update_price_content_type: str = "json"
     price_write_discovery: bool = False
 
     own_seller_id: str | None = None
@@ -154,11 +155,33 @@ class Settings(BaseSettings):
     @classmethod
     def validate_market_update_price_payload_style(cls, value: str) -> str:
         normalized = value.strip().lower()
-        if normalized in {"auto", "price", "amount", "cost"}:
+        if normalized in {
+            "auto",
+            "price",
+            "amount",
+            "cost",
+            "offer_price",
+            "new_price",
+            "price_value",
+            "price_string",
+            "amount_string",
+            "partial_update",
+            "bulk",
+        }:
             return normalized
         raise ValueError(
-            "MARKET_UPDATE_PRICE_PAYLOAD_STYLE must be auto, price, amount, or cost"
+            "MARKET_UPDATE_PRICE_PAYLOAD_STYLE must be one of: auto, price, amount, "
+            "cost, offer_price, new_price, price_value, price_string, amount_string, "
+            "partial_update, bulk"
         )
+
+    @field_validator("market_update_price_content_type")
+    @classmethod
+    def validate_market_update_price_content_type(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized in {"json", "form"}:
+            return normalized
+        raise ValueError("MARKET_UPDATE_PRICE_CONTENT_TYPE must be json or form")
 
     @field_validator("proxy_fast_1_url", "proxy_fast_2_url", "proxy_slow_url")
     @classmethod

@@ -97,12 +97,20 @@ def test_account_effective_limit_defaults_to_full_proxy_capacity() -> None:
 
 
 def test_price_write_settings_default_to_safe_analysis_mode() -> None:
-    settings = Settings(_env_file=None)
+    settings = Settings(
+        _env_file=None,
+        enable_real_price_writes=False,
+        market_update_lot_price_url="",
+        market_update_lot_price_method="POST",
+        market_update_price_payload_style="partial_update",
+        market_update_price_content_type="json",
+    )
 
     assert settings.enable_real_price_writes is False
     assert settings.market_update_lot_price_url == ""
     assert settings.market_update_lot_price_method == "POST"
-    assert settings.market_update_price_payload_style == "auto"
+    assert settings.market_update_price_payload_style == "partial_update"
+    assert settings.market_update_price_content_type == "json"
 
 
 def test_price_write_method_is_validated() -> None:
@@ -113,3 +121,8 @@ def test_price_write_method_is_validated() -> None:
 def test_price_write_payload_style_is_validated() -> None:
     with pytest.raises(ValueError):
         Settings(_env_file=None, market_update_price_payload_style="unknown")
+
+
+def test_price_write_content_type_is_validated() -> None:
+    with pytest.raises(ValueError):
+        Settings(_env_file=None, market_update_price_content_type="xml")

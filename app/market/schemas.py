@@ -63,3 +63,18 @@ class StarvellConnectionCheck:
 class UpdateResult:
     success: bool
     raw_payload: dict[str, Any] | None = field(default=None, compare=False)
+
+
+@dataclass(frozen=True)
+class PriceUpdateAttemptResult:
+    variant: str
+    method: str
+    url: str
+    request_content_type: str
+    payload: dict[str, Any]
+    status_code: int | None
+    response_content_type: str | None = None
+    response_headers: dict[str, str] = field(default_factory=dict)
+    response_body: str | None = None
+    success: bool = False
+    reason: str | None = None

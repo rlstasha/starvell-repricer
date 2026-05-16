@@ -65,32 +65,61 @@ MARKET_OFFERS_LIMIT=100
 ```env
 DRY_RUN=false
 ENABLE_REAL_PRICE_WRITES=true
-MARKET_UPDATE_LOT_PRICE_URL=https://starvell.com/api/offers/{lot_id}/price
+MARKET_UPDATE_LOT_PRICE_URL=https://starvell.com/api/offers/{lot_id}/partial-update
+MARKET_UPDATE_LOT_PRICE_METHOD=POST
+MARKET_UPDATE_PRICE_PAYLOAD_STYLE=partial_update
+MARKET_UPDATE_PRICE_CONTENT_TYPE=json
 ```
 
-Endpoint изменения цены нужно взять из DevTools -> Network после ручного
-сохранения цены на Starvell. Cookie, session, csrf и token в документацию или
-Git добавлять нельзя.
+Безопасным GET frontend-кода Starvell найден endpoint из страницы списка
+предложений:
 
-Безопасным чтением frontend-кода Starvell найден кандидат:
+```env
+MARKET_UPDATE_LOT_PRICE_URL=https://starvell.com/api/offers/{lot_id}/partial-update
+MARKET_UPDATE_LOT_PRICE_METHOD=POST
+MARKET_UPDATE_PRICE_PAYLOAD_STYLE=partial_update
+MARKET_UPDATE_PRICE_CONTENT_TYPE=json
+```
+
+Frontend страницы “Ваши предложения” получает список через
+`POST /api/offers/list-my`, а при сохранении измененных строк вызывает
+`partialUpdate` для каждого лота:
+
+```json
+{
+  "availability": 927,
+  "price": "123",
+  "minOrderCurrencyAmount": null,
+  "isActive": true
+}
+```
+
+Обычная форма редактирования использует route ниже, но Starvell ответил, что
+для массового обновления предложений нужно использовать endpoint из списка:
 
 ```env
 MARKET_UPDATE_LOT_PRICE_URL=https://starvell.com/api/offers/{lot_id}/update
 MARKET_UPDATE_LOT_PRICE_METHOD=POST
 MARKET_UPDATE_PRICE_PAYLOAD_STYLE=price
+MARKET_UPDATE_PRICE_CONTENT_TYPE=json
 ```
 
-Также в frontend-клиенте есть route:
+Если Starvell отклонит payload, безопасно посмотрите план диагностики:
 
-```env
-MARKET_UPDATE_LOT_PRICE_URL=https://starvell.com/api/offers/{lot_id}/partial-update
-MARKET_UPDATE_LOT_PRICE_METHOD=POST
-MARKET_UPDATE_PRICE_PAYLOAD_STYLE=price
+```bash
+python -m app.test_price_update --lot-id 2000 --price 123 --debug
 ```
 
-Если Starvell отклонит `{"price": 123}`, значит update endpoint требует полный
-payload формы. Тогда откройте DevTools -> Network при ручном сохранении цены и
-перенесите подтвержденный URL/method/payload style.
+Без `--confirm` команда не отправляет POST/PATCH/PUT. Чтобы реально получить
+status/body/headers без секретов и перебрать JSON/form payload-варианты,
+запустите:
+
+```bash
+python -m app.test_price_update --lot-id 2000 --price 123 --debug --confirm
+```
+
+Если Starvell снова отклонит payload, откройте DevTools -> Network при ручном
+сохранении цены и проверьте подтвержденный URL/method/payload style/content type.
 
 Текущий источник конкурентов:
 
@@ -228,7 +257,8 @@ DRY_RUN=true
 ENABLE_REAL_PRICE_WRITES=false
 MARKET_UPDATE_LOT_PRICE_URL=
 MARKET_UPDATE_LOT_PRICE_METHOD=POST
-MARKET_UPDATE_PRICE_PAYLOAD_STYLE=auto
+MARKET_UPDATE_PRICE_PAYLOAD_STYLE=partial_update
+MARKET_UPDATE_PRICE_CONTENT_TYPE=json
 ```
 
 Первое значение берется из `.env` и сохраняется в таблицу `app_settings`. Дальше режим можно переключать кнопкой в Telegram-боте без перезапуска контейнеров.
@@ -245,9 +275,10 @@ MARKET_UPDATE_PRICE_PAYLOAD_STYLE=auto
 ```env
 DRY_RUN=false
 ENABLE_REAL_PRICE_WRITES=true
-MARKET_UPDATE_LOT_PRICE_URL=https://starvell.com/api/offers/{lot_id}/update
+MARKET_UPDATE_LOT_PRICE_URL=https://starvell.com/api/offers/{lot_id}/partial-update
 MARKET_UPDATE_LOT_PRICE_METHOD=POST
-MARKET_UPDATE_PRICE_PAYLOAD_STYLE=price
+MARKET_UPDATE_PRICE_PAYLOAD_STYLE=partial_update
+MARKET_UPDATE_PRICE_CONTENT_TYPE=json
 ```
 
 Поддерживаемые payload style:
@@ -256,8 +287,20 @@ MARKET_UPDATE_PRICE_PAYLOAD_STYLE=price
 price  -> {"price": 123}
 amount -> {"amount": 123}
 cost   -> {"cost": 123}
+offer_price -> {"offer_price": 123}
+new_price -> {"new_price": 123}
+price_value -> {"price_value": 123}
+price_string -> {"price": "123"}
+amount_string -> {"amount": "123"}
+partial_update -> {"availability": 927, "price": "123", "minOrderCurrencyAmount": null, "isActive": true}
+bulk -> {"offers": [{"lot_id": 2000, "price": 123}]}
 auto   -> {"price": 123}
 ```
+
+`MARKET_UPDATE_PRICE_CONTENT_TYPE` может быть `json` или `form`.
+Если Starvell возвращает HTTP 400, запустите debug-режим: он переберет
+известные payload-варианты и `application/json`/`application/x-www-form-urlencoded`,
+а также подтянет не секретные поля из GET-страницы лота.
 
 Проверка настройки:
 
@@ -277,6 +320,16 @@ python -m app.test_price_update --lot-id 2000 --price 123
 ```bash
 python -m app.test_price_update --lot-id 2000 --price 123 --confirm
 ```
+
+Диагностика HTTP 400 с телом ответа Starvell:
+
+```bash
+python -m app.test_price_update --lot-id 2000 --price 123 --debug --confirm
+```
+
+Debug-режим отправляет реальные write-запросы только при `--confirm` и только
+если запись цен уже явно включена через `.env`. Cookie, session, csrf, token и
+proxy password в выводе маскируются.
 
 ## Запуск через Docker
 

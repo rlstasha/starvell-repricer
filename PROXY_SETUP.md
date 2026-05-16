@@ -216,22 +216,52 @@ PROXY_SLOW_POSITIONS=40,80,200,2100,2500,3600,4500,10000,22500
 ```env
 DRY_RUN=false
 ENABLE_REAL_PRICE_WRITES=true
-MARKET_UPDATE_LOT_PRICE_URL=https://starvell.com/api/offers/{lot_id}/update
+MARKET_UPDATE_LOT_PRICE_URL=https://starvell.com/api/offers/{lot_id}/partial-update
 MARKET_UPDATE_LOT_PRICE_METHOD=POST
-MARKET_UPDATE_PRICE_PAYLOAD_STYLE=price
+MARKET_UPDATE_PRICE_PAYLOAD_STYLE=partial_update
+MARKET_UPDATE_PRICE_CONTENT_TYPE=json
 ```
 
-Безопасным GET frontend-кода Starvell найден основной кандидат:
+Безопасным GET frontend-кода Starvell найден endpoint страницы списка
+предложений. Frontend получает мои предложения через `POST /api/offers/list-my`,
+а сохраняет измененные строки через `partialUpdate`:
 
 ```env
-MARKET_UPDATE_LOT_PRICE_URL=https://starvell.com/api/offers/{lot_id}/update
+MARKET_UPDATE_LOT_PRICE_URL=https://starvell.com/api/offers/{lot_id}/partial-update
 MARKET_UPDATE_LOT_PRICE_METHOD=POST
-MARKET_UPDATE_PRICE_PAYLOAD_STYLE=price
+MARKET_UPDATE_PRICE_PAYLOAD_STYLE=partial_update
+MARKET_UPDATE_PRICE_CONTENT_TYPE=json
 ```
 
-Если endpoint неизвестен, откройте Starvell вручную, измените цену своего лота,
-посмотрите DevTools -> Network и найдите POST/PATCH/PUT запрос сохранения цены.
-Cookie, session, csrf, token и proxy password не выводите в логи и не коммитьте.
+Payload:
+
+```json
+{
+  "availability": 927,
+  "price": "123",
+  "minOrderCurrencyAmount": null,
+  "isActive": true
+}
+```
+
+Диагностика записи цены без `--confirm` ничего не отправляет:
+
+```bash
+python -m app.test_price_update --lot-id 2000 --price 123 --debug
+```
+
+Чтобы получить status/body/headers ответа Starvell без секретов и перебрать
+известные payload-варианты, добавьте явное подтверждение:
+
+```bash
+python -m app.test_price_update --lot-id 2000 --price 123 --debug --confirm
+```
+
+При `--debug --confirm` команда показывает URL, method, payload, response body,
+response headers и content-type без cookie/session/csrf/token/proxy password.
+Она перебирает payload-варианты и JSON/form content-type. Если endpoint
+неизвестен, откройте Starvell вручную, измените цену своего лота, посмотрите
+DevTools -> Network и найдите POST/PATCH/PUT запрос сохранения цены.
 
 Проверка:
 

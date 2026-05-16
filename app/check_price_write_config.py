@@ -7,25 +7,34 @@ DEVTOOLS_INSTRUCTIONS = [
     "Откройте DevTools -> Network.",
     "Измените цену вручную и нажмите сохранение на сайте.",
     "Найдите POST/PATCH/PUT запрос, который ушел при сохранении.",
-    "Скопируйте URL, Method и JSON payload без cookie/session/csrf/token.",
-    "Добавьте URL в MARKET_UPDATE_LOT_PRICE_URL и выберите payload style.",
+    "Скопируйте URL, Method, payload и content-type без cookie/session/csrf/token.",
+    "Добавьте URL в MARKET_UPDATE_LOT_PRICE_URL и выберите payload style/content type.",
 ]
 
 DISCOVERED_STARVELL_CANDIDATES = [
     {
-        "url": "https://starvell.com/api/offers/{lot_id}/update",
+        "url": "https://starvell.com/api/offers/{lot_id}/partial-update",
         "method": "POST",
-        "payload": '{"price": 123}',
+        "payload": (
+            '{"availability":927,"price":"123",'
+            '"minOrderCurrencyAmount":null,"isActive":true}'
+        ),
         "note": (
-            "frontend Starvell также отправляет остальные поля формы; "
-            "если price-only не принят, нужно взять полный payload из Network"
+            "найден в frontend-коде страницы списка предложений; "
+            "она вызывает partialUpdate для каждой измененной строки"
         ),
     },
     {
-        "url": "https://starvell.com/api/offers/{lot_id}/partial-update",
+        "url": "https://starvell.com/api/offers/{lot_id}/update",
         "method": "POST",
         "payload": '{"price": 123}',
-        "note": "найден в frontend-клиенте как partialUpdate",
+        "note": "обычная форма редактирования лота; Starvell просит не использовать ее для массового обновления",
+    },
+    {
+        "url": "https://starvell.com/api/offers/list-my",
+        "method": "POST",
+        "payload": '{"categoryId":333,"limit":20,"offset":0}',
+        "note": "endpoint списка моих предложений, откуда frontend берет строки для partialUpdate",
     },
 ]
 
@@ -46,6 +55,7 @@ def main() -> int:
     print(f"Endpoint: {'configured' if endpoint_configured else 'missing'}")
     print(f"Method: {settings.market_update_lot_price_method}")
     print(f"Payload style: {settings.market_update_price_payload_style}")
+    print(f"Content type: {settings.market_update_price_content_type}")
     print(f"Proxy mode: {settings.proxy_mode}")
     print(f"Can update prices: {'yes' if can_update else 'no'}")
 

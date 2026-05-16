@@ -1,5 +1,6 @@
 import argparse
 import asyncio
+import json
 from decimal import Decimal, InvalidOperation
 
 from app.core.config import Settings, get_settings
@@ -11,6 +12,7 @@ from app.market.exceptions import (
     StarvellPayloadStyleError,
     StarvellWriteDisabledError,
 )
+from app.market.schemas import PriceUpdateAttemptResult
 from app.repricer.rate_limiter import InMemoryFixedWindowRateLimiter
 
 
@@ -31,6 +33,14 @@ def main() -> int:
         action="store_true",
         help="Actually send the configured write request",
     )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help=(
+            "Send diagnostic write attempts with known payload/content-type variants "
+            "and print sanitized Starvell responses"
+        ),
+    )
     args = parser.parse_args()
 
     try:
@@ -49,6 +59,7 @@ def main() -> int:
             position_amount=position_amount,
             price=price,
             confirm=args.confirm,
+            debug=args.debug,
         )
     )
 
@@ -60,6 +71,7 @@ async def _run(
     position_amount: int,
     price: Decimal,
     confirm: bool,
+    debug: bool,
 ) -> int:
     group = _group_for_position(settings, position_amount)
     proxy_url = settings.proxy_url_for_group(group) if group else None
@@ -72,12 +84,22 @@ async def _run(
     print(f"endpoint: {'configured' if settings.market_update_lot_price_url else 'missing'}")
     print(f"method: {settings.market_update_lot_price_method}")
     print(f"payload style: {settings.market_update_price_payload_style}")
+    print(f"content type: {settings.market_update_price_content_type}")
 
     if not confirm:
         print()
         print("Реальный запрос НЕ отправлен.")
-        print("Для отправки добавьте --confirm.")
+        if debug:
+            print("Debug-режим подготовлен, но diagnostic POST/PATCH/PUT тоже не отправлен.")
+            print("Чтобы получить response body/headers Starvell, добавьте --confirm.")
+        else:
+            print("Для отправки добавьте --confirm.")
         return 0
+
+    if debug:
+        print()
+        print("Debug mode: будут отправлены реальные POST/PATCH/PUT попытки, если запись включена.")
+        print("Секреты в выводе маскируются.")
 
     limiter = InMemoryFixedWindowRateLimiter(limit=settings.worker_request_limit_per_minute)
     async with StarvellClient(
@@ -87,11 +109,21 @@ async def _run(
         proxy_url=proxy_url,
     ) as client:
         try:
+            if debug:
+                attempts = await client.debug_my_lot_price_update(
+                    position_amount=position_amount,
+                    lot_id=lot_id,
+                    new_price=price,
+                    allow_real_write=not settings.dry_run,
+                )
+                _print_debug_attempts(attempts)
+                return 0 if any(attempt.success for attempt in attempts) else 1
+
             result = await client.update_my_lot_price(
                 position_amount=position_amount,
                 lot_id=lot_id,
                 new_price=price,
-                allow_real_write=True,
+                allow_real_write=not settings.dry_run,
             )
         except (
             StarvellEndpointNotConfiguredError,
@@ -111,6 +143,39 @@ async def _run(
     print()
     print(f"status: {'success' if result.success else 'failed'}")
     return 0 if result.success else 1
+
+
+def _print_debug_attempts(attempts: list[PriceUpdateAttemptResult]) -> None:
+    if not attempts:
+        print()
+        print("Диагностические попытки не выполнены.")
+        return
+
+    print()
+    print("Диагностика ответа Starvell")
+    for index, attempt in enumerate(attempts, start=1):
+        print()
+        print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        print(f"attempt: {index}")
+        print("request:")
+        print(f"{attempt.method} {attempt.url}")
+        print(f"content-type: {attempt.request_content_type}")
+        print("payload:")
+        print(json.dumps(attempt.payload, ensure_ascii=False, indent=2))
+        print()
+        print("response:")
+        print(f"status={attempt.status_code if attempt.status_code is not None else 'no_response'}")
+        if attempt.reason:
+            print(f"reason={attempt.reason}")
+        print(f"content-type: {attempt.response_content_type or ''}")
+        print("headers:")
+        print(json.dumps(attempt.response_headers, ensure_ascii=False, indent=2))
+        print("body:")
+        print(attempt.response_body or "")
+        if attempt.success:
+            print()
+            print("Успех: Starvell принял этот вариант. Остальные варианты не отправлялись.")
+            break
 
 
 def _position_amount_for_lot(lot_id: str) -> int | None:

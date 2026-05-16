@@ -468,6 +468,7 @@ async def test_update_my_lot_price_requires_endpoint() -> None:
         _env_file=None,
         market_base_url="https://starvell.example",
         enable_real_price_writes=True,
+        market_update_lot_price_url="",
     )
 
     async with StarvellClient(settings, InMemoryFixedWindowRateLimiter(), client) as starvell:
@@ -507,6 +508,250 @@ async def test_update_my_lot_price_uses_configured_write_endpoint() -> None:
 
     assert result.success is True
     assert result.raw_payload == {"ok": True}
+
+
+@pytest.mark.asyncio
+async def test_update_my_lot_price_can_send_form_payload() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url.path == "/api/offers/2000/update"
+        assert request.headers["content-type"].startswith("application/x-www-form-urlencoded")
+        assert request.content == b"offer_price=123"
+        return httpx.Response(200, json={"ok": True})
+
+    client = httpx.AsyncClient(
+        base_url="https://starvell.example",
+        transport=httpx.MockTransport(handler),
+    )
+    settings = Settings(
+        _env_file=None,
+        market_base_url="https://starvell.example",
+        enable_real_price_writes=True,
+        market_update_lot_price_url="/api/offers/{lot_id}/update",
+        market_update_price_payload_style="offer_price",
+        market_update_price_content_type="form",
+    )
+
+    async with StarvellClient(settings, InMemoryFixedWindowRateLimiter(), client) as starvell:
+        result = await starvell.update_my_lot_price(
+            500,
+            "2000",
+            Decimal("123"),
+            allow_real_write=True,
+        )
+
+    assert result.success is True
+
+
+@pytest.mark.asyncio
+async def test_update_my_lot_price_can_send_partial_update_payload_from_offer_page() -> None:
+    requests: list[httpx.Request] = []
+    html = """
+    <script id="__NEXT_DATA__" type="application/json">
+    {
+      "props": {
+        "pageProps": {
+          "offer": {
+            "id": 2000,
+            "availability": 927,
+            "price": "339.90",
+            "minOrderCurrencyAmount": null,
+            "isActive": true,
+            "instantDelivery": false
+          }
+        }
+      }
+    }
+    </script>
+    """
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.method == "GET":
+            return httpx.Response(200, text=html, headers={"content-type": "text/html"})
+
+        assert request.method == "POST"
+        assert request.url.path == "/api/offers/2000/partial-update"
+        payload = json.loads(request.content)
+        assert payload == {
+            "availability": 927,
+            "price": "123",
+            "minOrderCurrencyAmount": None,
+            "isActive": True,
+        }
+        return httpx.Response(200, json={"ok": True})
+
+    client = httpx.AsyncClient(
+        base_url="https://starvell.example",
+        transport=httpx.MockTransport(handler),
+    )
+    settings = Settings(
+        _env_file=None,
+        market_base_url="https://starvell.example",
+        enable_real_price_writes=True,
+        market_update_lot_price_url="/api/offers/{lot_id}/partial-update",
+        market_update_price_payload_style="partial_update",
+    )
+
+    async with StarvellClient(settings, InMemoryFixedWindowRateLimiter(), client) as starvell:
+        result = await starvell.update_my_lot_price(
+            500,
+            "2000",
+            Decimal("123"),
+            allow_real_write=True,
+        )
+
+    assert result.success is True
+    assert [request.method for request in requests] == ["GET", "GET", "POST"]
+
+
+@pytest.mark.asyncio
+async def test_update_my_lot_price_can_send_bulk_payload() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url.path == "/api/offers/bulk-update"
+        payload = json.loads(request.content)
+        assert payload == {
+            "offers": [
+                {
+                    "lot_id": 2000,
+                    "price": 123,
+                    "position_amount": 500,
+                }
+            ]
+        }
+        return httpx.Response(200, json={"ok": True})
+
+    client = httpx.AsyncClient(
+        base_url="https://starvell.example",
+        transport=httpx.MockTransport(handler),
+    )
+    settings = Settings(
+        _env_file=None,
+        market_base_url="https://starvell.example",
+        enable_real_price_writes=True,
+        market_update_lot_price_url="/api/offers/bulk-update",
+        market_update_price_payload_style="bulk",
+    )
+
+    async with StarvellClient(settings, InMemoryFixedWindowRateLimiter(), client) as starvell:
+        result = await starvell.update_my_lot_price(
+            500,
+            "2000",
+            Decimal("123"),
+            allow_real_write=True,
+        )
+
+    assert result.success is True
+
+
+@pytest.mark.asyncio
+async def test_debug_price_update_tries_payloads_content_types_and_context() -> None:
+    requests: list[httpx.Request] = []
+    html = """
+    <script id="__NEXT_DATA__" type="application/json">
+    {
+      "props": {
+        "pageProps": {
+          "offer": {
+            "id": 2000,
+            "availability": 927,
+            "currency": "RUB",
+            "category": {"id": 40},
+            "subCategory": {"id": 333},
+            "user": {"id": 4111}
+          }
+        }
+      }
+    }
+    </script>
+    """
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.method == "GET":
+            return httpx.Response(200, text=html, headers={"content-type": "text/html"})
+
+        if (
+            request.headers["content-type"].startswith("application/x-www-form-urlencoded")
+            and b"availability=927" in request.content
+            and b"price=123" in request.content
+            and b"isActive=true" in request.content
+        ):
+            return httpx.Response(200, json={"ok": True})
+        return httpx.Response(
+            400,
+            text='{"message":"validation failed"}',
+            headers={"content-type": "application/json"},
+        )
+
+    client = httpx.AsyncClient(
+        base_url="https://starvell.example",
+        transport=httpx.MockTransport(handler),
+    )
+    settings = Settings(
+        _env_file=None,
+        market_base_url="https://starvell.example",
+        enable_real_price_writes=True,
+        market_update_lot_price_url="/api/offers/{lot_id}/update",
+    )
+
+    async with StarvellClient(settings, InMemoryFixedWindowRateLimiter(), client) as starvell:
+        attempts = await starvell.debug_my_lot_price_update(
+            500,
+            "2000",
+            Decimal("123"),
+            allow_real_write=True,
+        )
+
+    write_requests = [request for request in requests if request.method == "POST"]
+    assert any(
+        request.headers["content-type"].startswith("application/json")
+        for request in write_requests
+    )
+    assert any(
+        request.headers["content-type"].startswith("application/x-www-form-urlencoded")
+        for request in write_requests
+    )
+    assert attempts[-1].success is True
+    assert attempts[-1].variant == "partial_update_from_my_offers_page"
+    assert attempts[-1].request_content_type == "application/x-www-form-urlencoded"
+
+
+@pytest.mark.asyncio
+async def test_debug_price_update_sanitizes_response_headers_and_body() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(200, text="<html></html>")
+        return httpx.Response(
+            400,
+            text="session=secret-session validation failed",
+            headers={"set-cookie": "session=secret-session", "content-type": "text/plain"},
+        )
+
+    client = httpx.AsyncClient(
+        base_url="https://starvell.example",
+        transport=httpx.MockTransport(handler),
+    )
+    settings = Settings(
+        _env_file=None,
+        market_base_url="https://starvell.example",
+        market_session_cookie="secret-session",
+        enable_real_price_writes=True,
+        market_update_lot_price_url="/api/offers/{lot_id}/update",
+    )
+
+    async with StarvellClient(settings, InMemoryFixedWindowRateLimiter(), client) as starvell:
+        attempts = await starvell.debug_my_lot_price_update(
+            500,
+            "2000",
+            Decimal("123"),
+            allow_real_write=True,
+        )
+
+    assert attempts[0].response_headers["set-cookie"] == "***"
+    assert "secret-session" not in (attempts[0].response_body or "")
+    assert "***" in (attempts[0].response_body or "")
 
 
 def test_explain_http_status_returns_human_russian_text() -> None:
