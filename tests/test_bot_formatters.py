@@ -5,6 +5,7 @@ from app.bot.formatters import (
     format_general_settings,
     format_logs,
     format_position_card,
+    format_price_change_toggle_result,
     format_proxy_status,
     format_worker_servers,
 )
@@ -406,7 +407,40 @@ def test_proxy_status_shows_price_write_ready_state() -> None:
     assert "Режим: реальные изменения" in text
     assert "Endpoint: настроен" in text
     assert "Статус: готов" in text
+    assert "Последнее успешное изменение цены:" in text
+    assert "Последняя ошибка записи:" in text
     assert "500 робуксов, ID 2000" in text
+
+
+def test_price_change_toggle_result_is_clear_when_ready() -> None:
+    text = format_price_change_toggle_result(
+        dry_run=False,
+        real_price_writes_enabled=True,
+        endpoint_configured=True,
+    )
+
+    assert text == "✅ Изменение цен включено.\nРеальная запись настроена и активна."
+
+
+def test_price_change_toggle_result_explains_missing_endpoint() -> None:
+    text = format_price_change_toggle_result(
+        dry_run=False,
+        real_price_writes_enabled=True,
+        endpoint_configured=False,
+    )
+
+    assert "endpoint не настроен" in text
+    assert "Реальные цены меняться не будут." in text
+
+
+def test_price_change_toggle_result_explains_analysis_mode() -> None:
+    text = format_price_change_toggle_result(
+        dry_run=True,
+        real_price_writes_enabled=True,
+        endpoint_configured=True,
+    )
+
+    assert text == "Изменение цен остановлено. Сейчас работает только анализ."
 
 
 def test_logs_show_proxy_group_and_missing_reason_text() -> None:

@@ -442,6 +442,27 @@ def format_general_settings(
     )
 
 
+def format_price_change_toggle_result(
+    *,
+    dry_run: bool,
+    real_price_writes_enabled: bool,
+    endpoint_configured: bool,
+) -> str:
+    if dry_run:
+        return "Изменение цен остановлено. Сейчас работает только анализ."
+    if real_price_writes_enabled and endpoint_configured:
+        return "✅ Изменение цен включено.\nРеальная запись настроена и активна."
+    if not endpoint_configured:
+        return (
+            "⚠️ Изменение цен включено, но endpoint не настроен.\n"
+            "Реальные цены меняться не будут."
+        )
+    return (
+        "⚠️ Изменение цен включено, но реальные записи отключены в конфигурации.\n"
+        "Реальные цены меняться не будут."
+    )
+
+
 def format_status(
     *,
     worker_state: WorkerState | None,
@@ -960,7 +981,7 @@ def _price_write_status_lines(
         f"• Endpoint: {'настроен' if endpoint_configured else 'отсутствует'}",
         f"• Статус: {status}",
         f"• Причина: {reason}",
-        f"• Последнее изменение: {_price_log_summary(latest_price_update)}",
+        f"• Последнее успешное изменение цены: {_price_log_summary(latest_price_update)}",
         f"• Последняя ошибка записи: {_price_log_summary(latest_price_write_error)}",
     ]
 

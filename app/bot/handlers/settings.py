@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlalchemy.ext.asyncio.session import AsyncSession
 
 from app.bot.formatters import (
+    format_price_change_toggle_result,
     format_general_settings,
     format_logs,
     format_proxy_profiles,
@@ -73,10 +74,10 @@ async def toggle_dry_run(
         await session.commit()
         new_value = not current
 
-    text = (
-        "Изменение цен остановлено. Сейчас работает только анализ."
-        if new_value
-        else "Изменение цен включено. Реальная запись сработает только при настроенном endpoint."
+    text = format_price_change_toggle_result(
+        dry_run=new_value,
+        real_price_writes_enabled=settings.enable_real_price_writes,
+        endpoint_configured=bool(settings.market_update_lot_price_url),
     )
     await safe_edit_text(
         callback,
