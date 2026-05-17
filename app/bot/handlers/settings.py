@@ -8,9 +8,10 @@ from sqlalchemy.ext.asyncio.session import AsyncSession
 from app.bot.formatters import (
     format_errors_screen,
     format_general_settings,
+    format_log_page,
     format_limits_screen,
-    format_logs,
     format_main_menu,
+    format_misc_menu,
     format_price_change_toggle_result,
     format_price_write_screen,
     format_price_write_test_hint,
@@ -20,10 +21,14 @@ from app.bot.formatters import (
     format_technical_status,
 )
 from app.bot.keyboards import (
-    back_to_status_keyboard,
+    back_to_main_keyboard,
+    back_to_misc_keyboard,
     general_settings_keyboard,
+    logs_pagination_keyboard,
     main_menu_keyboard,
+    misc_menu_keyboard,
     price_status_keyboard,
+    proxy_pagination_keyboard,
     status_sections_keyboard,
 )
 from app.bot.status_context import load_telegram_status_context
@@ -151,7 +156,25 @@ async def show_status(
     )
 
 
-@router.callback_query(lambda query: query.data in {"proxies:show", "proxies:limits", "servers:limits"})
+@router.callback_query(lambda query: query.data == "misc:show")
+async def show_misc_menu(
+    callback: CallbackQuery,
+    state: FSMContext,
+) -> None:
+    await cleanup_pending_prompt(state, callback.bot, clear_state=True)
+    await answer_loading(callback)
+    await safe_edit_text(
+        callback,
+        format_misc_menu(),
+        reply_markup=misc_menu_keyboard(),
+    )
+
+
+@router.callback_query(
+    lambda query: query.data in {"proxies:show", "proxies:limits", "servers:limits"}
+    or (query.data or "").startswith("proxies:page:")
+    or (query.data or "").startswith("proxies:refresh:")
+)
 async def show_proxy_profiles(
     callback: CallbackQuery,
     session_factory: async_sessionmaker[AsyncSession],
@@ -160,6 +183,7 @@ async def show_proxy_profiles(
 ) -> None:
     await cleanup_pending_prompt(state, callback.bot, clear_state=True)
     await answer_loading(callback)
+    page = _page_from_callback(callback.data)
     async with session_factory() as session:
         heartbeats = await WorkerHeartbeatRepository(session).list_all()
 
@@ -168,8 +192,12 @@ async def show_proxy_profiles(
         format_proxy_screen(
             group_infos=settings.worker_group_infos,
             heartbeats=heartbeats,
+            page=page,
         ),
-        reply_markup=back_to_status_keyboard(),
+        reply_markup=proxy_pagination_keyboard(
+            page=min(page, max(len(settings.worker_group_infos) - 1, 0)),
+            total=len(settings.worker_group_infos),
+        ),
     )
 
 
@@ -211,7 +239,7 @@ async def show_price_write_test_hint(
     await safe_edit_text(
         callback,
         format_price_write_test_hint(),
-        reply_markup=back_to_status_keyboard(),
+        reply_markup=back_to_main_keyboard(),
     )
 
 
@@ -238,7 +266,7 @@ async def show_limits(
             request_usage=status_context.request_usage,
             global_limit=settings.global_request_limit_per_minute,
         ),
-        reply_markup=back_to_status_keyboard(),
+        reply_markup=back_to_misc_keyboard(),
     )
 
 
@@ -259,7 +287,7 @@ async def show_scheduler(
             group_infos=settings.worker_group_infos,
             heartbeats=heartbeats,
         ),
-        reply_markup=back_to_status_keyboard(),
+        reply_markup=back_to_misc_keyboard(),
     )
 
 
@@ -281,11 +309,13 @@ async def show_errors(
     await safe_edit_text(
         callback,
         format_errors_screen(
+            latest_price_update=status_context.latest_price_update,
             latest_price_write_error=status_context.latest_price_write_error,
             recent_errors=status_context.recent_errors,
             heartbeats=status_context.heartbeats,
+            group_infos=settings.worker_group_infos,
         ),
-        reply_markup=back_to_status_keyboard(),
+        reply_markup=back_to_misc_keyboard(),
     )
 
 
@@ -312,12 +342,17 @@ async def show_technical_status(
             request_usage=status_context.request_usage,
             global_limit=settings.global_request_limit_per_minute,
             recent_errors=status_context.recent_errors,
+            group_infos=settings.worker_group_infos,
         ),
-        reply_markup=back_to_status_keyboard(),
+        reply_markup=back_to_misc_keyboard(),
     )
 
 
-@router.callback_query(lambda query: query.data == "logs:recent")
+@router.callback_query(
+    lambda query: query.data == "logs:recent"
+    or (query.data or "").startswith("logs:page:")
+    or (query.data or "").startswith("logs:refresh:")
+)
 async def show_recent_logs(
     callback: CallbackQuery,
     session_factory: async_sessionmaker[AsyncSession],
@@ -326,6 +361,7 @@ async def show_recent_logs(
 ) -> None:
     await cleanup_pending_prompt(state, callback.bot, clear_state=True)
     await answer_loading(callback)
+    page = _page_from_callback(callback.data)
     async with session_factory() as session:
         repo = PositionRepository(session)
         logs = await repo.list_latest_price_logs_by_position()
@@ -334,12 +370,28 @@ async def show_recent_logs(
 
     await safe_edit_text(
         callback,
-        format_logs(
+        format_log_page(
             logs,
+            page=page,
             proxy_mode=settings.proxy_mode,
             group_infos=settings.worker_group_infos,
             heartbeats=heartbeats,
             schedule_states=schedule_states,
         ),
-        reply_markup=back_to_status_keyboard(),
+        reply_markup=logs_pagination_keyboard(
+            page=min(page, max(len(logs) - 1, 0)),
+            total=len(logs),
+        ),
     )
+
+
+def _page_from_callback(callback_data: str | None) -> int:
+    if not callback_data:
+        return 0
+    parts = callback_data.split(":")
+    if len(parts) < 3:
+        return 0
+    try:
+        return max(0, int(parts[2]))
+    except ValueError:
+        return 0

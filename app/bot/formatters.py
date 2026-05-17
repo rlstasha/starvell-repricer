@@ -150,12 +150,22 @@ def format_main_menu(
     global_limit: int = 100,
     group_infos: list[WorkerGroupInfo] | None = None,
 ) -> str:
+    group_infos = group_infos or []
     heartbeats = heartbeats or []
-    active_proxy_count, total_proxy_count = _proxy_activity_counts(heartbeats, group_infos or [])
-    effective_limit = _account_effective_limit(heartbeats, global_limit)
-    account_usage = _account_usage(heartbeats, request_usage)
-    backoff_active = _account_backoff_active(heartbeats, effective_limit, global_limit)
-    worker_active = _worker_active(worker_state=worker_state, heartbeats=heartbeats)
+    display_heartbeats = (
+        _current_group_heartbeats(heartbeats, group_infos)
+        if _use_proxy_ui(proxy_mode) and group_infos
+        else heartbeats
+    )
+    active_proxy_count, total_proxy_count = _proxy_activity_counts(display_heartbeats, group_infos)
+    effective_limit = _account_effective_limit(display_heartbeats, global_limit)
+    account_usage = _account_usage(display_heartbeats, request_usage)
+    backoff_active = _account_backoff_active(display_heartbeats, effective_limit, global_limit)
+    worker_active = (
+        active_proxy_count > 0
+        if _use_proxy_ui(proxy_mode) and total_proxy_count > 0
+        else _worker_active(worker_state=worker_state, heartbeats=display_heartbeats)
+    )
     proxy_line = (
         f"✅ {active_proxy_count}/{total_proxy_count}"
         if _use_proxy_ui(proxy_mode) and total_proxy_count > 0
@@ -411,10 +421,12 @@ def format_general_settings(
     heartbeats: list[WorkerHeartbeat] | None = None,
 ) -> str:
     if _use_proxy_ui(proxy_mode) and group_infos:
+        display_heartbeats = _current_group_heartbeats(heartbeats or [], group_infos)
         heartbeat_by_group = {
             heartbeat.worker_group: heartbeat
-            for heartbeat in (heartbeats or [])
+            for heartbeat in display_heartbeats
         }
+        effective_account_limit = _account_effective_limit(display_heartbeats, global_limit or request_limit)
         lines = [
             SEPARATOR,
             "⚙️ Общие настройки",
@@ -427,12 +439,12 @@ def format_general_settings(
             ),
             "🌐 Режим запросов: прокси",
             f"🚦 Общий лимит: {global_limit or request_limit}/мин",
-            f"🧠 Эффективный лимит аккаунта: {_account_effective_limit(heartbeats or [], global_limit or request_limit)}/мин",
-            f"📉 Замедление: {'активно' if _account_backoff_active(heartbeats or [], _account_effective_limit(heartbeats or [], global_limit or request_limit), global_limit or request_limit) else 'нет'}",
+            f"🧠 Эффективный лимит аккаунта: {effective_account_limit}/мин",
+            f"📉 Замедление: {'активно' if _account_backoff_active(display_heartbeats, effective_account_limit, global_limit or request_limit) else 'нет'}",
             "",
         ]
         for info in group_infos:
-            heartbeat = heartbeat_by_group.get(info.name) or heartbeat_by_group.get("all")
+            heartbeat = heartbeat_by_group.get(info.name)
             configured_limit = _configured_limit(info, heartbeat)
             effective_limit = _effective_limit(info, heartbeat)
             interval_min, interval_max = _heartbeat_interval_range(info, heartbeat)
@@ -490,9 +502,9 @@ def format_price_change_toggle_result(
     endpoint_configured: bool,
 ) -> str:
     if dry_run:
-        return "🛑 Изменение цен остановлено\n\nБот продолжит анализировать рынок без изменения цен"
+        return "🛑 Изменение цен остановлено\n\nБот продолжит анализировать рынок, но цены менять не будет."
     if real_price_writes_enabled and endpoint_configured:
-        return "✅ Изменение цен включено\n\nРеальная запись настроена и активна"
+        return "✅ Изменение цен включено\n\nРеальная запись настроена и активна."
     if not endpoint_configured:
         return (
             "⚠️ Изменение цен включено, но endpoint не настроен.\n"
@@ -516,11 +528,16 @@ def format_status_overview(
     global_limit: int,
     group_infos: list[WorkerGroupInfo],
 ) -> str:
-    active_proxy_count, total_proxy_count = _proxy_activity_counts(heartbeats, group_infos)
-    effective_limit = _account_effective_limit(heartbeats, global_limit)
-    account_usage = _account_usage(heartbeats, request_usage)
-    account_backoff = _account_backoff_active(heartbeats, effective_limit, global_limit)
-    worker_active = _worker_active(worker_state=worker_state, heartbeats=heartbeats)
+    display_heartbeats = _current_group_heartbeats(heartbeats, group_infos) if group_infos else heartbeats
+    active_proxy_count, total_proxy_count = _proxy_activity_counts(display_heartbeats, group_infos)
+    effective_limit = _account_effective_limit(display_heartbeats, global_limit)
+    account_usage = _account_usage(display_heartbeats, request_usage)
+    account_backoff = _account_backoff_active(display_heartbeats, effective_limit, global_limit)
+    worker_active = (
+        active_proxy_count > 0
+        if total_proxy_count > 0
+        else _worker_active(worker_state=worker_state, heartbeats=display_heartbeats)
+    )
     last_update_lines = _compact_price_log_lines(latest_price_update)
     return "\n".join(
         [
@@ -550,7 +567,7 @@ def format_status_overview(
             "активно" if account_backoff else "нет",
             "",
             "🚫 Последний 429:",
-            dt(_account_last_429(heartbeats)),
+            dt(_account_last_429(display_heartbeats)),
             "",
             "🕒 Последнее изменение:",
             *last_update_lines,
@@ -623,32 +640,69 @@ def format_price_write_test_hint() -> str:
     )
 
 
+def format_misc_menu() -> str:
+    return "\n".join(
+        [
+            SEPARATOR,
+            "",
+            "📂 Прочее",
+            "",
+            "Здесь собраны технические разделы.",
+            "",
+            SEPARATOR,
+        ]
+    )
+
+
 def format_proxy_screen(
     *,
     group_infos: list[WorkerGroupInfo],
     heartbeats: list[WorkerHeartbeat],
+    page: int = 0,
 ) -> str:
+    if not group_infos:
+        return "\n".join([SEPARATOR, "", "🌐 Прокси", "", "Прокси-группы не настроены.", "", SEPARATOR])
+
     now = datetime.now(UTC)
     heartbeat_by_group = {heartbeat.worker_group: heartbeat for heartbeat in heartbeats}
-    lines = [SEPARATOR, "", "🌐 Прокси", ""]
-    for index, info in enumerate(group_infos):
-        heartbeat = heartbeat_by_group.get(info.name) or heartbeat_by_group.get("all")
-        is_active = bool(heartbeat and (now - heartbeat.last_seen_at).total_seconds() <= 90)
-        lines.extend(
-            [
-                f"{info.icon} {info.label}",
-                "",
-                f"IP: {heartbeat.public_ip if heartbeat and heartbeat.public_ip else 'нет данных'}",
-                "",
-                "Позиции:",
-                _positions_inline(info.positions),
-                "",
-                "Статус:",
-                _server_status(heartbeat, is_active),
-            ]
-        )
-        if index < len(group_infos) - 1:
-            lines.extend(["", "---", ""])
+    page = _clamp_page(page, len(group_infos))
+    info = group_infos[page]
+    heartbeat = heartbeat_by_group.get(info.name)
+    is_active = bool(heartbeat and (now - heartbeat.last_seen_at).total_seconds() <= 90)
+    configured_limit = _configured_limit(info, heartbeat)
+    interval_min, interval_max = _heartbeat_interval_range(info, heartbeat)
+    lines = [
+        SEPARATOR,
+        "",
+        "🌐 Прокси",
+        f"{page + 1}/{len(group_infos)}",
+        "",
+        f"{info.icon} {info.label}",
+        "",
+        "IP:",
+        heartbeat.public_ip if heartbeat and heartbeat.public_ip else "нет данных",
+        "",
+        "Позиции:",
+        _positions_inline(info.positions),
+        "",
+        "Лимит:",
+        f"{configured_limit}/мин",
+        "",
+        "Нагрузка:",
+        f"{_profile_usage(heartbeat)}/{configured_limit}",
+        "",
+        "Текущий интервал:",
+        _seconds_value(getattr(heartbeat, "current_delay_seconds", None)),
+        "",
+        "Частота:",
+        _seconds_range(interval_min, interval_max),
+        "",
+        "Статус:",
+        _server_status(heartbeat, is_active),
+        "",
+        "Последний 429:",
+        _last_429_text(heartbeat),
+    ]
     lines.extend(["", SEPARATOR])
     return "\n".join(lines)
 
@@ -660,16 +714,17 @@ def format_limits_screen(
     request_usage: int,
     global_limit: int,
 ) -> str:
-    heartbeat_by_group = {heartbeat.worker_group: heartbeat for heartbeat in heartbeats}
+    display_heartbeats = _current_group_heartbeats(heartbeats, group_infos)
+    heartbeat_by_group = {heartbeat.worker_group: heartbeat for heartbeat in display_heartbeats}
     proxy_capacity = sum(info.request_limit_per_minute for info in group_infos)
-    account_effective_limit = _account_effective_limit(heartbeats, global_limit)
-    account_usage = _account_usage(heartbeats, request_usage)
+    account_effective_limit = _account_effective_limit(display_heartbeats, global_limit)
+    account_usage = _account_usage(display_heartbeats, request_usage)
     account_backoff = _account_backoff_active(
-        heartbeats,
+        display_heartbeats,
         account_effective_limit,
         global_limit,
     ) or any(
-        _backoff_active(info, heartbeat_by_group.get(info.name) or heartbeat_by_group.get("all"))
+        _backoff_active(info, heartbeat_by_group.get(info.name))
         for info in group_infos
     )
     lines = [
@@ -687,7 +742,7 @@ def format_limits_screen(
         "",
     ]
     for info in group_infos:
-        heartbeat = heartbeat_by_group.get(info.name) or heartbeat_by_group.get("all")
+        heartbeat = heartbeat_by_group.get(info.name)
         lines.append(
             f"{_compact_group_label(info)}: "
             f"{_profile_usage(heartbeat)}/{_configured_limit(info, heartbeat)}"
@@ -702,7 +757,7 @@ def format_limits_screen(
             "активно" if account_backoff else "нет",
             "",
             "🚫 Последний 429:",
-            dt(_account_last_429(heartbeats)),
+            dt(_account_last_429(display_heartbeats)),
             "",
             SEPARATOR,
         ]
@@ -718,7 +773,7 @@ def format_scheduler_screen(
     heartbeat_by_group = {heartbeat.worker_group: heartbeat for heartbeat in heartbeats}
     lines = [SEPARATOR, "", "🧠 Умный планировщик", ""]
     for index, info in enumerate(group_infos):
-        heartbeat = heartbeat_by_group.get(info.name) or heartbeat_by_group.get("all")
+        heartbeat = heartbeat_by_group.get(info.name)
         timing = timing_for_group(info.name)
         lines.extend(
             [
@@ -742,16 +797,65 @@ def format_scheduler_screen(
 
 def format_errors_screen(
     *,
+    latest_price_update: tuple[PriceUpdateLog, Position | None] | None = None,
     latest_price_write_error: tuple[PriceUpdateLog, Position | None] | None,
     recent_errors: list[tuple[PriceUpdateLog, Position | None]],
     heartbeats: list[WorkerHeartbeat],
+    group_infos: list[WorkerGroupInfo] | None = None,
 ) -> str:
-    last_429 = _account_last_429(heartbeats)
+    display_heartbeats = (
+        _current_group_heartbeats(heartbeats, group_infos)
+        if group_infos
+        else heartbeats
+    )
+    last_429 = _account_last_429(display_heartbeats)
     proxy_problem = any(
         heartbeat.safe_mode or heartbeat.errors_403 or heartbeat.errors_timeout
-        for heartbeat in heartbeats
+        for heartbeat in display_heartbeats
     )
-    system_problem = any(error.reason for error, _position in recent_errors)
+    last_success_at = latest_price_update[0].created_at if latest_price_update else None
+    actual_errors = [
+        (log, position)
+        for log, position in recent_errors
+        if last_success_at is None or log.created_at > last_success_at
+    ]
+    latest_actual_error = (
+        latest_price_write_error
+        if latest_price_write_error
+        and (last_success_at is None or latest_price_write_error[0].created_at > last_success_at)
+        else (actual_errors[0] if actual_errors else None)
+    )
+    latest_old_error = (
+        latest_price_write_error
+        if latest_price_write_error and latest_price_write_error != latest_actual_error
+        else (recent_errors[0] if recent_errors else None)
+    )
+    system_problem = bool(actual_errors)
+
+    if not latest_actual_error and latest_old_error:
+        return "\n".join(
+            [
+                SEPARATOR,
+                "",
+                "🧯 Ошибки",
+                "",
+                "Актуальных ошибок нет.",
+                "",
+                "Последняя старая ошибка:",
+                *_price_log_block_lines(latest_old_error, include_reason=True),
+                "",
+                "Сейчас запись цены работает.",
+                "",
+                "429:",
+                dt(last_429) if last_429 else "нет",
+                "",
+                "Прокси:",
+                "есть предупреждения" if proxy_problem else "нет",
+                "",
+                SEPARATOR,
+            ]
+        )
+
     return "\n".join(
         [
             SEPARATOR,
@@ -759,7 +863,7 @@ def format_errors_screen(
             "🧯 Ошибки",
             "",
             "Последняя ошибка:",
-            *_price_log_block_lines(latest_price_write_error, include_reason=True),
+            *_price_log_block_lines(latest_actual_error, include_reason=True),
             "",
             "429:",
             dt(last_429) if last_429 else "нет",
@@ -782,7 +886,9 @@ def format_technical_status(
     request_usage: int,
     global_limit: int,
     recent_errors: list[tuple[PriceUpdateLog, Position | None]],
+    group_infos: list[WorkerGroupInfo] | None = None,
 ) -> str:
+    current_groups = {info.name for info in (group_infos or [])}
     lines = [
         SEPARATOR,
         "",
@@ -796,9 +902,11 @@ def format_technical_status(
     if not heartbeats:
         lines.append("—")
     for heartbeat in heartbeats:
+        is_legacy = bool(current_groups and heartbeat.worker_group not in current_groups)
         lines.extend(
             [
                 f"worker_group={heartbeat.worker_group}",
+                f"record_status={'устаревшая запись' if is_legacy else 'актуальная запись'}",
                 f"status={heartbeat.status}",
                 f"heartbeat={dt(heartbeat.last_seen_at)}",
                 f"public_ip={heartbeat.public_ip or '—'}",
@@ -813,9 +921,15 @@ def format_technical_status(
     if not worker_states:
         lines.append("—")
     for state in worker_states:
+        state_group = state.name.removeprefix("repricer:")
+        is_legacy = bool(
+            current_groups
+            and (state.name == "repricer" or state_group not in current_groups)
+        )
         lines.extend(
             [
                 f"name={state.name}",
+                f"record_status={'устаревшая запись' if is_legacy else 'актуальная запись'}",
                 f"last_status={state.last_status or '—'}",
                 f"last_error={state.last_error or '—'}",
                 f"last_cycle={dt(state.last_cycle_at)}",
@@ -1013,8 +1127,6 @@ def format_proxy_status(
 
     for info in group_infos:
         heartbeat = heartbeat_by_group.get(info.name)
-        if heartbeat is None and len(heartbeat_by_group) == 1:
-            heartbeat = heartbeat_by_group.get("all")
         is_active = bool(
             heartbeat
             and (now - heartbeat.last_seen_at).total_seconds() <= 90
@@ -1129,7 +1241,7 @@ def format_proxy_profiles(
     ]
 
     for info in group_infos:
-        heartbeat = heartbeat_by_group.get(info.name) or heartbeat_by_group.get("all")
+        heartbeat = heartbeat_by_group.get(info.name)
         is_active = bool(
             heartbeat
             and (now - heartbeat.last_seen_at).total_seconds() <= 90
@@ -1202,51 +1314,112 @@ def format_logs(
     lines = [SEPARATOR, "📝 Последние действия", ""]
     for position, log in logs:
         lines.extend(
-            [
-                f"📦 {position.robux_amount} робуксов · "
-                f"🆔 ID: {_lot_id_text(position)}",
-            ]
+            _log_entry_lines(
+                position,
+                log,
+                proxy_mode=proxy_mode,
+                group_infos=group_infos,
+                heartbeats=heartbeats,
+                schedule_states=schedule_states,
+            )
         )
-        proxy_lines = _position_proxy_context_lines(
-            position,
-            group_infos=group_infos,
-            heartbeats=heartbeats,
-            proxy_mode=proxy_mode,
-            group_label="Группа",
-            include_ip=False,
-            include_frequency=False,
-            schedule_states=schedule_states,
-        )
-        lines.extend(proxy_lines)
-
-        if log is None:
-            lines.extend(["📌 Статус: еще не проверялась", SEPARATOR])
-            continue
-
-        reason_key = _reason_key(log.reason)
-        inner_reason = _dry_run_inner_reason(log.reason)
-        display_reason_key = inner_reason or reason_key
-        display_reason = inner_reason or log.reason
-        if log.status == UpdateStatus.DRY_RUN.value:
-            lines.append("💰 Изменение цен: только анализ")
-        lines.extend(
-            [
-                f"📌 Статус: {_status_label(log.status)}",
-                f"Причина: {_reason_label(display_reason_key, display_reason)}",
-            ]
-        )
-        price_parts = [
-            f"💰 Моя: {money(log.old_price)}",
-            f"🏆 Конкурент: {money(log.competitor_price)}",
-            f"📉 Расчетная: {money(log.new_price)}",
-        ]
-        lines.append(" · ".join(price_parts))
-        hint = _check_hint(display_reason_key, log.status)
-        if hint:
-            lines.append(f"Что проверить: {hint}")
-        lines.append(f"🕒 Время: {dt(log.created_at)}")
         lines.append(SEPARATOR)
     return "\n".join(lines)
+
+
+def format_log_page(
+    logs: list[tuple[Position, PriceUpdateLog | None]],
+    *,
+    page: int = 0,
+    proxy_mode: str = "disabled",
+    group_infos: list[WorkerGroupInfo] | None = None,
+    heartbeats: list[WorkerHeartbeat] | None = None,
+    schedule_states: list[PositionScheduleState] | None = None,
+) -> str:
+    if not logs:
+        return "\n".join([SEPARATOR, "", "📝 Последние действия", "", "Логов действий пока нет.", "", SEPARATOR])
+
+    page = _clamp_page(page, len(logs))
+    position, log = logs[page]
+    return "\n".join(
+        [
+            SEPARATOR,
+            "",
+            "📝 Последние действия",
+            f"{page + 1}/{len(logs)}",
+            "",
+            *_log_entry_lines(
+                position,
+                log,
+                proxy_mode=proxy_mode,
+                group_infos=group_infos,
+                heartbeats=heartbeats,
+                schedule_states=schedule_states,
+            ),
+            SEPARATOR,
+        ]
+    )
+
+
+def _log_entry_lines(
+    position: Position,
+    log: PriceUpdateLog | None,
+    *,
+    proxy_mode: str = "disabled",
+    group_infos: list[WorkerGroupInfo] | None = None,
+    heartbeats: list[WorkerHeartbeat] | None = None,
+    schedule_states: list[PositionScheduleState] | None = None,
+) -> list[str]:
+    lines = [
+        f"📦 {position.robux_amount} робуксов",
+        f"🆔 ID: {_lot_id_text(position)}",
+    ]
+    proxy_lines = _position_proxy_context_lines(
+        position,
+        group_infos=group_infos,
+        heartbeats=heartbeats,
+        proxy_mode=proxy_mode,
+        group_label="Группа",
+        include_ip=False,
+        include_frequency=False,
+        schedule_states=schedule_states,
+    )
+    lines.extend(proxy_lines)
+
+    if log is None:
+        lines.extend(["", "📌 Статус:", "еще не проверялась"])
+        return lines
+
+    reason_key = _reason_key(log.reason)
+    inner_reason = _dry_run_inner_reason(log.reason)
+    display_reason_key = inner_reason or reason_key
+    display_reason = inner_reason or log.reason
+    if log.status == UpdateStatus.DRY_RUN.value:
+        lines.extend(["", "💰 Изменение цен:", "только анализ"])
+    lines.extend(
+        [
+            "",
+            "📌 Статус:",
+            _status_label(log.status),
+            "",
+            "Причина:",
+            _reason_label(display_reason_key, display_reason),
+            "",
+            "💰 Моя:",
+            money(log.old_price),
+            "",
+            "🏆 Конкурент:",
+            money(log.competitor_price),
+            "",
+            "📉 Расчетная:",
+            money(log.new_price),
+        ]
+    )
+    hint = _check_hint(display_reason_key, log.status)
+    if hint:
+        lines.extend(["", "Что проверить:", hint])
+    lines.extend(["", "🕒 Время:", dt(log.created_at)])
+    return lines
 
 
 def _status_label(status: str | None) -> str:
@@ -1412,6 +1585,12 @@ def _duration(seconds: float) -> str:
     if minutes < 10:
         return f"{minutes:.1f} мин"
     return f"{round(minutes)} мин"
+
+
+def _clamp_page(page: int, total: int) -> int:
+    if total <= 0:
+        return 0
+    return max(0, min(page, total - 1))
 
 
 def _lot_id_text(position: Position) -> str:
@@ -1625,6 +1804,16 @@ def _worker_active(
     return bool(heartbeat and (now - heartbeat).total_seconds() <= 90)
 
 
+def _current_group_heartbeats(
+    heartbeats: list[WorkerHeartbeat],
+    group_infos: list[WorkerGroupInfo] | None,
+) -> list[WorkerHeartbeat]:
+    current_groups = {info.name for info in (group_infos or [])}
+    if not current_groups:
+        return heartbeats
+    return [heartbeat for heartbeat in heartbeats if heartbeat.worker_group in current_groups]
+
+
 def _proxy_activity_counts(
     heartbeats: list[WorkerHeartbeat],
     group_infos: list[WorkerGroupInfo],
@@ -1635,7 +1824,7 @@ def _proxy_activity_counts(
     heartbeat_by_group = {heartbeat.worker_group: heartbeat for heartbeat in heartbeats}
     active = 0
     for info in group_infos:
-        heartbeat = heartbeat_by_group.get(info.name) or heartbeat_by_group.get("all")
+        heartbeat = heartbeat_by_group.get(info.name)
         if heartbeat and (now - heartbeat.last_seen_at).total_seconds() <= 90:
             active += 1
     return active, len(group_infos)
@@ -1664,7 +1853,7 @@ def _heartbeat_for_group(
     if info is None or not heartbeats:
         return None
     heartbeat_by_group = {heartbeat.worker_group: heartbeat for heartbeat in heartbeats}
-    return heartbeat_by_group.get(info.name) or heartbeat_by_group.get("all")
+    return heartbeat_by_group.get(info.name)
 
 
 def _position_proxy_context_lines(

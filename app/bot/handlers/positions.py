@@ -104,6 +104,10 @@ async def position_actions(
         await _show_price_test(callback, session_factory, settings, amount)
         return
 
+    if action == "group":
+        await callback.answer("Группа и частота показаны в карточке позиции.")
+        return
+
     if action == "edit":
         field_name = parts[2]
         if field_name not in EDIT_LABELS:

@@ -4,9 +4,11 @@ from decimal import Decimal
 from app.bot.formatters import (
     format_errors_screen,
     format_general_settings,
+    format_log_page,
     format_limits_screen,
     format_logs,
     format_main_menu,
+    format_misc_menu,
     format_position_card,
     format_price_change_toggle_result,
     format_price_write_screen,
@@ -15,6 +17,13 @@ from app.bot.formatters import (
     format_status_overview,
     format_technical_status,
     format_worker_servers,
+)
+from app.bot.keyboards import (
+    logs_pagination_keyboard,
+    main_menu_keyboard,
+    misc_menu_keyboard,
+    position_card_keyboard,
+    proxy_pagination_keyboard,
 )
 from app.core.config import Settings
 from app.db.models import (
@@ -66,10 +75,10 @@ def test_logs_show_all_position_context_for_no_competitors_keep_current_price() 
 
     assert "📦 40 робуксов" in text
     assert "🆔 ID: не указан" in text
-    assert "🕒 Время: 15.05.2026 13:08" in text
-    assert "📌 Статус: пропущено" in text
-    assert "Причина: Нет подходящих конкурентов. Цена оставлена без изменений." in text
-    assert "Что проверить: фильтр рейтинга, категорию, список конкурентов" in text
+    assert "🕒 Время:\n15.05.2026 13:08" in text
+    assert "📌 Статус:\nпропущено" in text
+    assert "Причина:\nНет подходящих конкурентов. Цена оставлена без изменений." in text
+    assert "Что проверить:\nфильтр рейтинга, категорию, список конкурентов" in text
     assert "UTC" not in text
 
 
@@ -85,9 +94,9 @@ def test_logs_translate_missing_lot_id() -> None:
     text = format_logs([(position, log)])
 
     assert "📦 40 робуксов" in text
-    assert "📌 Статус: пропущено" in text
-    assert "Причина: Не найден ID лота." in text
-    assert "Что проверить: указать ID лота в карточке позиции" in text
+    assert "📌 Статус:\nпропущено" in text
+    assert "Причина:\nНе найден ID лота." in text
+    assert "Что проверить:\nуказать ID лота в карточке позиции" in text
 
 
 def test_logs_include_positions_without_history() -> None:
@@ -97,7 +106,7 @@ def test_logs_include_positions_without_history() -> None:
 
     assert "📦 22500 робуксов" in text
     assert "🆔 ID: 2012" in text
-    assert "📌 Статус: еще не проверялась" in text
+    assert "📌 Статус:\nеще не проверялась" in text
 
 
 def test_worker_servers_show_new_fast_split_and_frequency() -> None:
@@ -135,7 +144,7 @@ def test_worker_servers_show_new_fast_split_and_frequency() -> None:
     assert "Dry-run" not in text
 
 
-def test_proxy_profiles_use_direct_worker_heartbeat_as_fallback() -> None:
+def test_proxy_profiles_do_not_show_legacy_all_heartbeat_in_user_ui() -> None:
     settings = Settings(_env_file=None)
     heartbeat = WorkerHeartbeat(
         worker_group="all",
@@ -155,7 +164,8 @@ def test_proxy_profiles_use_direct_worker_heartbeat_as_fallback() -> None:
         global_limit=settings.global_request_limit_per_minute,
     )
 
-    assert text.count("203.0.113.20") == 3
+    assert "203.0.113.20" not in text
+    assert text.count("нет данных") >= 3
 
 
 def test_position_card_uses_proxy_group_frequency_and_ip() -> None:
@@ -243,6 +253,35 @@ def test_main_menu_is_compact_and_russian() -> None:
     assert "Proxy capacity" not in text
 
 
+def test_main_menu_keyboard_keeps_technical_sections_in_misc() -> None:
+    markup = main_menu_keyboard(dry_run=False)
+    rows = [[button.callback_data for button in row] for row in markup.inline_keyboard]
+
+    assert rows == [
+        ["positions:list", "price:status"],
+        ["status:show", "logs:recent"],
+        ["settings:general", "misc:show"],
+    ]
+
+
+def test_misc_menu_contains_technical_sections() -> None:
+    text = format_misc_menu()
+    markup = misc_menu_keyboard()
+    callbacks = [
+        button.callback_data
+        for row in markup.inline_keyboard
+        for button in row
+    ]
+
+    assert "📂 Прочее" in text
+    assert "Здесь собраны технические разделы." in text
+    assert "proxies:show" in callbacks
+    assert "limits:show" in callbacks
+    assert "scheduler:show" in callbacks
+    assert "errors:show" in callbacks
+    assert "technical:status" in callbacks
+
+
 def test_status_overview_is_short_and_proxy_aware() -> None:
     settings = Settings(_env_file=None)
     heartbeat = WorkerHeartbeat(
@@ -313,12 +352,62 @@ def test_proxy_screen_contains_only_proxy_health() -> None:
     )
 
     assert "🌐 Прокси" in text
+    assert "1/3" in text
     assert "🚀 Fast 1" in text
-    assert "IP: 45.132.20.115" in text
+    assert "IP:\n45.132.20.115" in text
     assert "500 · 800 · 1000" in text
+    assert "Лимит:\n100/мин" in text
+    assert "Нагрузка:\n0/100" in text
     assert "Статус:\n✅ активен" in text
     assert "Пропускная способность" not in text
-    assert "Нагрузка" not in text
+
+
+def test_proxy_screen_is_paginated_one_profile_per_page() -> None:
+    settings = Settings(_env_file=None)
+    heartbeat = WorkerHeartbeat(
+        worker_group="fast_2",
+        hostname="server",
+        public_ip="45.132.20.205",
+        assigned_positions=[400, 1200, 1700, 2000],
+        request_limit_per_minute=100,
+        profile_request_usage_per_minute=89,
+        current_delay_seconds=2.6,
+        last_seen_at=datetime.now(UTC),
+        status="success",
+        dry_run=False,
+    )
+
+    text = format_proxy_screen(
+        group_infos=settings.worker_group_infos,
+        heartbeats=[heartbeat],
+        page=1,
+    )
+
+    assert "🌐 Прокси" in text
+    assert "2/3" in text
+    assert "🚀 Fast 2" in text
+    assert "45.132.20.205" in text
+    assert "400 · 1200 · 1700 · 2000" in text
+    assert "Нагрузка:\n89/100" in text
+    assert "Текущий интервал:\n2.6 сек" in text
+    assert "Fast 1" not in text
+    assert "Slow" not in text
+
+
+def test_proxy_pagination_keyboard_hides_unavailable_edges() -> None:
+    first_page = proxy_pagination_keyboard(page=0, total=3)
+    middle_page = proxy_pagination_keyboard(page=1, total=3)
+    first_texts = [button.text for row in first_page.inline_keyboard for button in row]
+    middle_callbacks = [
+        button.callback_data
+        for row in middle_page.inline_keyboard
+        for button in row
+    ]
+
+    assert "⬅️ Предыдущий" not in first_texts
+    assert "➡️ Следующий" in first_texts
+    assert "proxies:page:0" in middle_callbacks
+    assert "proxies:page:2" in middle_callbacks
 
 
 def test_limits_screen_uses_russian_labels() -> None:
@@ -408,12 +497,48 @@ def test_technical_status_keeps_raw_fields_separate() -> None:
         request_usage=12,
         global_limit=settings.global_request_limit_per_minute,
         recent_errors=[],
+        group_infos=settings.worker_group_infos,
     )
 
     assert "🔧 Технический статус" in text
     assert "worker_group=fast_1" in text
+    assert "record_status=актуальная запись" in text
     assert "status=safe_mode_429" in text
     assert "last_error=http_400" in text
+
+
+def test_technical_status_marks_legacy_records() -> None:
+    settings = Settings(_env_file=None)
+    heartbeat = WorkerHeartbeat(
+        worker_group="all",
+        hostname="old-server",
+        public_ip="203.0.113.20",
+        assigned_positions=[500],
+        request_limit_per_minute=100,
+        last_seen_at=datetime(2026, 5, 15, 18, 26, tzinfo=UTC),
+        status="dry_run",
+        dry_run=True,
+    )
+    worker_state = WorkerState(
+        name="repricer",
+        last_heartbeat_at=datetime(2026, 5, 15, 18, 26, tzinfo=UTC),
+        last_cycle_at=datetime(2026, 5, 15, 18, 26, tzinfo=UTC),
+        last_position_amount=500,
+        last_status="dry_run",
+    )
+
+    text = format_technical_status(
+        worker_states=[worker_state],
+        heartbeats=[heartbeat],
+        request_usage=0,
+        global_limit=settings.global_request_limit_per_minute,
+        recent_errors=[],
+        group_infos=settings.worker_group_infos,
+    )
+
+    assert "worker_group=all" in text
+    assert "name=repricer" in text
+    assert text.count("record_status=устаревшая запись") == 2
 
 
 def test_limits_screen_shows_effective_limit_backoff_and_last_429() -> None:
@@ -529,6 +654,34 @@ def test_errors_screen_explains_safe_mode_without_technical_links() -> None:
     assert "developer.mozilla.org" not in text
 
 
+def test_errors_screen_hides_old_errors_after_successful_price_update() -> None:
+    old_error = PriceUpdateLog(
+        position_id=1,
+        status=UpdateStatus.FAILED.value,
+        reason="http_400",
+        created_at=datetime(2026, 5, 16, 17, 55, tzinfo=UTC),
+    )
+    success_log = PriceUpdateLog(
+        position_id=1,
+        status=UpdateStatus.SUCCESS.value,
+        new_price=Decimal("580.70"),
+        created_at=datetime(2026, 5, 16, 23, 21, tzinfo=UTC),
+    )
+
+    text = format_errors_screen(
+        latest_price_update=(success_log, _position(800, "2002")),
+        latest_price_write_error=(old_error, _position(500, "2000")),
+        recent_errors=[(old_error, _position(500, "2000"))],
+        heartbeats=[],
+    )
+
+    assert "Актуальных ошибок нет." in text
+    assert "Последняя старая ошибка:" in text
+    assert "http 400" in text
+    assert "Сейчас запись цены работает." in text
+    assert "Системные:\nесть ошибки" not in text
+
+
 def test_price_write_screen_shows_ready_state() -> None:
     settings = Settings(_env_file=None)
     success_log = PriceUpdateLog(
@@ -563,7 +716,7 @@ def test_price_change_toggle_result_is_clear_when_ready() -> None:
         endpoint_configured=True,
     )
 
-    assert text == "✅ Изменение цен включено\n\nРеальная запись настроена и активна"
+    assert text == "✅ Изменение цен включено\n\nРеальная запись настроена и активна."
 
 
 def test_price_change_toggle_result_explains_missing_endpoint() -> None:
@@ -584,7 +737,67 @@ def test_price_change_toggle_result_explains_analysis_mode() -> None:
         endpoint_configured=True,
     )
 
-    assert text == "🛑 Изменение цен остановлено\n\nБот продолжит анализировать рынок без изменения цен"
+    assert text == "🛑 Изменение цен остановлено\n\nБот продолжит анализировать рынок, но цены менять не будет."
+
+
+def test_log_page_shows_one_action_per_page() -> None:
+    settings = Settings(_env_file=None)
+    first_position = _position(40, None)
+    second_position = _position(500, "2000")
+    first_log = PriceUpdateLog(
+        position_id=1,
+        status=UpdateStatus.SKIPPED.value,
+        reason="missing_lot_id",
+        created_at=datetime(2026, 5, 15, 11, 16, tzinfo=UTC),
+    )
+    second_log = PriceUpdateLog(
+        position_id=2,
+        status=UpdateStatus.SUCCESS.value,
+        reason="updated",
+        old_price=Decimal("312.50"),
+        competitor_price=Decimal("310.00"),
+        new_price=Decimal("309.70"),
+        created_at=datetime(2026, 5, 15, 19, 10, tzinfo=UTC),
+    )
+
+    text = format_log_page(
+        [(first_position, first_log), (second_position, second_log)],
+        page=0,
+        proxy_mode="enabled",
+        group_infos=settings.worker_group_infos,
+    )
+
+    assert "📝 Последние действия" in text
+    assert "1/2" in text
+    assert "📦 40 робуксов" in text
+    assert "🆔 ID: не указан" in text
+    assert "🌐 Группа: Slow" in text
+    assert "📌 Статус:\nпропущено" in text
+    assert "Причина:\nНе найден ID лота." in text
+    assert "Что проверить:\nуказать ID лота в карточке позиции" in text
+    assert "500 робуксов" not in text
+
+
+def test_logs_pagination_keyboard_hides_unavailable_edges() -> None:
+    first_page = logs_pagination_keyboard(page=0, total=2)
+    last_page = logs_pagination_keyboard(page=1, total=2)
+    first_texts = [button.text for row in first_page.inline_keyboard for button in row]
+    last_texts = [button.text for row in last_page.inline_keyboard for button in row]
+
+    assert "⬅️ Предыдущая" not in first_texts
+    assert "➡️ Следующая" in first_texts
+    assert "⬅️ Предыдущая" in last_texts
+    assert "➡️ Следующая" not in last_texts
+
+
+def test_position_card_keyboard_is_compact() -> None:
+    markup = position_card_keyboard(_position(500, "2000"))
+    rows = [[button.callback_data for button in row] for row in markup.inline_keyboard]
+
+    assert ["position:edit:min_price:500", "position:edit:max_price:500"] in rows
+    assert ["position:edit:step:500", "position:edit:min_rating:500"] in rows
+    assert ["position:edit:lot_id:500", "position:group:500"] in rows
+    assert ["position:toggle_ignore:500", "position:competitors:500"] in rows
 
 
 def test_logs_show_proxy_group_and_missing_reason_text() -> None:
@@ -608,7 +821,7 @@ def test_logs_show_proxy_group_and_missing_reason_text() -> None:
     )
 
     assert "🌐 Группа: Fast 2" in text
-    assert "Причина: Причина не записана. Нужно проверить лог worker." in text
+    assert "Причина:\nПричина не записана. Нужно проверить лог worker." in text
     assert "—" not in text
 
 
@@ -627,5 +840,5 @@ def test_logs_hide_technical_http_links_from_old_errors() -> None:
 
     text = format_logs([(position, log)])
 
-    assert "Причина: Сайт ограничил частоту запросов." in text
+    assert "Причина:\nСайт ограничил частоту запросов." in text
     assert "developer.mozilla.org" not in text
