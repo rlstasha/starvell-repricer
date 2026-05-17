@@ -191,18 +191,17 @@ def format_main_menu(
     )
     return "\n".join(
         [
-            SEPARATOR,
             "🤖 Starvell Repricer",
             "",
-            "💰 Изменение цен:",
+            "🤖 Worker:",
+            "✅ активен" if worker_active else "⚠️ не отвечает",
+            "",
+            "💰 Реальные цены:",
             _price_change_state_line(
                 dry_run=dry_run,
                 real_price_writes_enabled=real_price_writes_enabled,
                 endpoint_configured=price_write_endpoint_configured,
             ),
-            "",
-            "🤖 Worker:",
-            "✅ активен" if worker_active else "⚠️ не отвечает",
             "",
             "🌐 Прокси:",
             proxy_line,
@@ -210,12 +209,8 @@ def format_main_menu(
             "🚦 Нагрузка:",
             f"{account_usage}/{effective_limit}",
             "",
-            "📉 Замедление:",
-            "активно" if backoff_active else "нет",
-            "",
-            "Выберите раздел:",
-            "",
-            SEPARATOR,
+            "🧯 Ошибки:",
+            "есть предупреждения" if backoff_active else "нет",
         ]
     )
 
@@ -249,7 +244,6 @@ def format_position_card(
     )
 
     lines = [
-        SEPARATOR,
         f"📦 Позиция: {position.robux_amount} робуксов",
         f"🆔 ID лота: {lot_id}",
         "",
@@ -304,7 +298,6 @@ def format_position_card(
         lines.extend(
             ["", "⚠️ Не найден ID лота. Репрайс невозможен."]
         )
-    lines.append(SEPARATOR)
     return "\n".join(lines)
 
 
@@ -318,7 +311,6 @@ def format_competitors(
     schedule_states: list[PositionScheduleState] | None = None,
 ) -> str:
     lines = [
-        SEPARATOR,
         "📊 Конкуренты",
         f"📦 Позиция: {position.robux_amount} робуксов",
         f"🆔 ID лота: {_lot_id_text(position)}",
@@ -343,7 +335,6 @@ def format_competitors(
                 "Что проверить: worker уже обработал позицию, "
                 "фильтр рейтинга "
                 "и данные рынка Starvell.",
-                SEPARATOR,
             ]
         )
         return "\n".join(lines)
@@ -364,7 +355,6 @@ def format_competitors(
             lines.append(f"   🚫 Игнор: {_ignore_reason_label(item.ignore_reason)}")
         lines.append("")
 
-    lines.append(SEPARATOR)
     return "\n".join(lines).rstrip()
 
 
@@ -386,7 +376,6 @@ def format_price_test(
         else "изменение не требуется"
     )
     lines = [
-        SEPARATOR,
         "🧪 Тест расчета цены",
         f"📦 Позиция: {position.robux_amount} робуксов",
         f"🆔 ID лота: {_lot_id_text(position)}",
@@ -421,7 +410,6 @@ def format_price_test(
         lines.extend(
             ["", "⚠️ Не найден ID лота. Репрайс невозможен."]
         )
-    lines.append(SEPARATOR)
     return "\n".join(lines)
 
 
@@ -440,61 +428,34 @@ def format_general_settings(
 ) -> str:
     if _use_proxy_ui(proxy_mode) and group_infos:
         display_heartbeats = _current_group_heartbeats(heartbeats or [], group_infos)
-        heartbeat_by_group = {
-            heartbeat.worker_group: heartbeat
-            for heartbeat in display_heartbeats
-        }
         effective_account_limit = _account_effective_limit(display_heartbeats, global_limit or request_limit)
         lines = [
-            SEPARATOR,
-            "⚙️ Общие настройки",
+            "⚙️ Настройки",
             "",
-            "💰 Изменение цен:",
+            "💰 Реальные цены:",
             _price_change_state_line(
                 dry_run=dry_run,
                 real_price_writes_enabled=real_price_writes_enabled,
                 endpoint_configured=price_write_endpoint_configured,
             ),
-            "🌐 Режим запросов: прокси",
-            f"🚦 Общий лимит: {global_limit or request_limit}/мин",
-            f"🧠 Эффективный лимит аккаунта: {effective_account_limit}/мин",
-            f"📉 Замедление: {'активно' if _account_backoff_active(display_heartbeats, effective_account_limit, global_limit or request_limit) else 'нет'}",
             "",
+            "🌐 Режим:",
+            "прокси",
+            "",
+            "🚦 Лимит:",
+            f"{effective_account_limit}/{global_limit or request_limit} в минуту",
+            "",
+            "Настройки лотов меняются в карточке позиции.",
         ]
-        for info in group_infos:
-            heartbeat = heartbeat_by_group.get(info.name)
-            configured_limit = _configured_limit(info, heartbeat)
-            effective_limit = _effective_limit(info, heartbeat)
-            interval_min, interval_max = _heartbeat_interval_range(info, heartbeat)
-            lines.extend(
-                [
-                    f"{info.icon} {info.label}",
-                    f"• Лимит: {configured_limit}/мин",
-                    f"• Эффективный лимит: {effective_limit}/мин",
-                    f"• Замедление: {_backoff_text(info, heartbeat)}",
-                    f"• Последний 429: {_last_429_text(heartbeat)}",
-                    f"• Позиции: {_positions_inline(info.positions)}",
-                    f"• Частота: {_seconds_range(interval_min, interval_max)}",
-                    f"• Текущая: {_seconds_value(getattr(heartbeat, 'current_delay_seconds', None))}",
-                    "",
-                ]
-            )
-        lines.extend(
-            [
-                "Настройки конкретной позиции меняются в карточке позиции.",
-                SEPARATOR,
-            ]
-        )
         return "\n".join(lines)
 
     high_budget = _request_budget(request_limit, high_percent)
     normal_budget = _request_budget(request_limit, normal_percent)
     return "\n".join(
         [
-            SEPARATOR,
-            "⚙️ Общие настройки",
+            "⚙️ Настройки",
             "",
-            "💰 Изменение цен:",
+            "💰 Реальные цены:",
             _price_change_state_line(
                 dry_run=dry_run,
                 real_price_writes_enabled=real_price_writes_enabled,
@@ -502,13 +463,12 @@ def format_general_settings(
             ),
             f"🚦 Общий лимит: {request_limit}/мин",
             "",
-            "⚡ Распределение запросов",
+            "⚡ Распределение",
             f"• High: {high_percent}% = {high_budget}/мин",
             f"• Normal: {normal_percent}% = {normal_budget}/мин",
             "",
             "Настройки конкретной позиции меняются "
             "в ее карточке.",
-            SEPARATOR,
         ]
     )
 
@@ -556,17 +516,14 @@ def format_status_overview(
         if total_proxy_count > 0
         else _worker_active(worker_state=worker_state, heartbeats=display_heartbeats)
     )
-    last_update_lines = _compact_price_log_lines(latest_price_update)
     return "\n".join(
         [
-            SEPARATOR,
-            "",
-            "📊 Статус репрайсера",
+            "📊 Статус",
             "",
             "🤖 Worker:",
             "✅ активен" if worker_active else "⚠️ не отвечает",
             "",
-            "💰 Изменение цен:",
+            "💰 Реальные цены:",
             _price_change_state_line(
                 dry_run=dry_run,
                 real_price_writes_enabled=real_price_writes_enabled,
@@ -581,16 +538,8 @@ def format_status_overview(
             "🚦 Нагрузка:",
             f"{account_usage}/{effective_limit}",
             "",
-            "📉 Замедление:",
-            "активно" if account_backoff else "нет",
-            "",
-            "🚫 Последний 429:",
-            dt(_account_last_429(display_heartbeats)),
-            "",
-            "🕒 Последнее изменение:",
-            *last_update_lines,
-            "",
-            SEPARATOR,
+            "🧯 Ошибки:",
+            "есть предупреждения" if account_backoff else "нет",
         ]
     )
 
@@ -614,8 +563,6 @@ def format_price_write_screen(
         status = "✅ готов"
     return "\n".join(
         [
-            SEPARATOR,
-            "",
             "💰 Изменение цен",
             "",
             "Режим:",
@@ -632,8 +579,6 @@ def format_price_write_screen(
             "",
             "Последняя ошибка:",
             *_price_log_block_lines(latest_price_write_error, include_reason=True),
-            "",
-            SEPARATOR,
         ]
     )
 
@@ -641,8 +586,6 @@ def format_price_write_screen(
 def format_price_write_test_hint() -> str:
     return "\n".join(
         [
-            SEPARATOR,
-            "",
             "🧪 Тест записи цены",
             "",
             "Тест с реальной отправкой запускается из консоли, чтобы случайно не изменить цену из Telegram.",
@@ -652,8 +595,6 @@ def format_price_write_test_hint() -> str:
             "",
             "С отправкой:",
             "python -m app.test_price_update --lot-id 2000 --price 123 --debug --confirm",
-            "",
-            SEPARATOR,
         ]
     )
 
@@ -661,13 +602,9 @@ def format_price_write_test_hint() -> str:
 def format_misc_menu() -> str:
     return "\n".join(
         [
-            SEPARATOR,
-            "",
             "📂 Прочее",
             "",
             "Здесь собраны технические разделы.",
-            "",
-            SEPARATOR,
         ]
     )
 
@@ -679,7 +616,7 @@ def format_proxy_screen(
     page: int = 0,
 ) -> str:
     if not group_infos:
-        return "\n".join([SEPARATOR, "", "🌐 Прокси", "", "Прокси-группы не настроены.", "", SEPARATOR])
+        return "\n".join(["🌐 Прокси", "", "Прокси-группы не настроены."])
 
     now = datetime.now(UTC)
     heartbeat_by_group = {heartbeat.worker_group: heartbeat for heartbeat in heartbeats}
@@ -690,8 +627,6 @@ def format_proxy_screen(
     configured_limit = _configured_limit(info, heartbeat)
     interval_min, interval_max = _heartbeat_interval_range(info, heartbeat)
     lines = [
-        SEPARATOR,
-        "",
         "🌐 Прокси",
         f"{page + 1}/{len(group_infos)}",
         "",
@@ -717,11 +652,7 @@ def format_proxy_screen(
         "",
         "Статус:",
         _server_status(heartbeat, is_active),
-        "",
-        "Последний 429:",
-        _last_429_text(heartbeat),
     ]
-    lines.extend(["", SEPARATOR])
     return "\n".join(lines)
 
 
@@ -746,11 +677,9 @@ def format_limits_screen(
         for info in group_infos
     )
     lines = [
-        SEPARATOR,
-        "",
         "🚦 Лимиты",
         "",
-        "🌐 Пропускная способность:",
+        "🌐 Общая мощность:",
         f"{proxy_capacity}/мин",
         "",
         "🧠 Лимит аккаунта:",
@@ -773,11 +702,6 @@ def format_limits_screen(
             "",
             "📉 Замедление:",
             "активно" if account_backoff else "нет",
-            "",
-            "🚫 Последний 429:",
-            dt(_account_last_429(display_heartbeats)),
-            "",
-            SEPARATOR,
         ]
     )
     return "\n".join(lines)
@@ -789,7 +713,7 @@ def format_scheduler_screen(
     heartbeats: list[WorkerHeartbeat],
 ) -> str:
     heartbeat_by_group = {heartbeat.worker_group: heartbeat for heartbeat in heartbeats}
-    lines = [SEPARATOR, "", "🧠 Умный планировщик", ""]
+    lines = ["🧠 Планировщик", ""]
     for index, info in enumerate(group_infos):
         heartbeat = heartbeat_by_group.get(info.name)
         timing = timing_for_group(info.name)
@@ -808,8 +732,7 @@ def format_scheduler_screen(
             ]
         )
         if index < len(group_infos) - 1:
-            lines.extend(["", "---", ""])
-    lines.extend(["", SEPARATOR])
+            lines.append("")
     return "\n".join(lines)
 
 
@@ -826,7 +749,6 @@ def format_errors_screen(
         if group_infos
         else heartbeats
     )
-    last_429 = _account_last_429(display_heartbeats)
     proxy_problem = any(
         heartbeat.safe_mode or heartbeat.errors_403 or heartbeat.errors_timeout
         for heartbeat in display_heartbeats
@@ -853,38 +775,20 @@ def format_errors_screen(
     if not latest_actual_error and latest_old_error:
         return "\n".join(
             [
-                SEPARATOR,
-                "",
                 "🧯 Ошибки",
                 "",
                 "Актуальных ошибок нет.",
                 "",
                 "Последняя старая ошибка:",
-                *_price_log_block_lines(latest_old_error, include_reason=True),
+                *_quote_lines(_price_log_block_lines(latest_old_error, include_reason=True)),
                 "",
                 "Сейчас запись цены работает.",
-                "",
-                "429:",
-                dt(last_429) if last_429 else "нет",
-                "",
-                "Прокси:",
-                "есть предупреждения" if proxy_problem else "нет",
-                "",
-                SEPARATOR,
             ]
         )
 
     return "\n".join(
         [
-            SEPARATOR,
-            "",
             "🧯 Ошибки",
-            "",
-            "Последняя ошибка:",
-            *_price_log_block_lines(latest_actual_error, include_reason=True),
-            "",
-            "429:",
-            dt(last_429) if last_429 else "нет",
             "",
             "Прокси:",
             "есть предупреждения" if proxy_problem else "нет",
@@ -892,7 +796,8 @@ def format_errors_screen(
             "Системные:",
             "есть ошибки" if system_problem else "нет",
             "",
-            SEPARATOR,
+            "Последняя ошибка:",
+            *(_quote_lines(_price_log_block_lines(latest_actual_error, include_reason=True)) if latest_actual_error else ["нет"]),
         ]
     )
 
@@ -908,34 +813,39 @@ def format_technical_status(
 ) -> str:
     current_groups = {info.name for info in (group_infos or [])}
     lines = [
-        SEPARATOR,
-        "",
         "🔧 Технический статус",
         "",
-        f"request_usage={request_usage}",
-        f"global_limit={global_limit}",
+        "Основное:",
+        *_quote_lines(
+            [
+                f"request_usage={request_usage}",
+                f"global_limit={global_limit}",
+            ]
+        ),
         "",
-        "heartbeats:",
+        "Heartbeats:",
     ]
     if not heartbeats:
         lines.append("—")
     for heartbeat in heartbeats:
         is_legacy = bool(current_groups and heartbeat.worker_group not in current_groups)
         lines.extend(
-            [
-                f"worker_group={heartbeat.worker_group}",
-                f"record_status={'устаревшая запись' if is_legacy else 'актуальная запись'}",
-                f"status={heartbeat.status}",
-                f"heartbeat={dt(heartbeat.last_seen_at)}",
-                f"public_ip={heartbeat.public_ip or '—'}",
-                f"profile_usage={_profile_usage(heartbeat)}",
-                f"effective_limit={getattr(heartbeat, 'effective_request_limit_per_minute', None) or '—'}",
-                f"last429={dt(getattr(heartbeat, 'last_429_at', None))}",
-                f"safe_mode={heartbeat.safe_mode}",
-                "---",
-            ]
+            _quote_lines(
+                [
+                    f"worker_group={heartbeat.worker_group}",
+                    f"record_status={'устаревшая запись' if is_legacy else 'актуальная запись'}",
+                    f"status={heartbeat.status}",
+                    f"heartbeat={dt(heartbeat.last_seen_at)}",
+                    f"public_ip={heartbeat.public_ip or '—'}",
+                    f"profile_usage={_profile_usage(heartbeat)}",
+                    f"effective_limit={getattr(heartbeat, 'effective_request_limit_per_minute', None) or '—'}",
+                    f"last429={dt(getattr(heartbeat, 'last_429_at', None))}",
+                    f"safe_mode={heartbeat.safe_mode}",
+                ]
+            )
         )
-    lines.extend(["", "worker_state:"])
+        lines.append("")
+    lines.extend(["Worker state:"])
     if not worker_states:
         lines.append("—")
     for state in worker_states:
@@ -945,22 +855,23 @@ def format_technical_status(
             and (state.name == "repricer" or state_group not in current_groups)
         )
         lines.extend(
-            [
-                f"name={state.name}",
-                f"record_status={'устаревшая запись' if is_legacy else 'актуальная запись'}",
-                f"last_status={state.last_status or '—'}",
-                f"last_error={state.last_error or '—'}",
-                f"last_cycle={dt(state.last_cycle_at)}",
-                "---",
-            ]
+            _quote_lines(
+                [
+                    f"name={state.name}",
+                    f"record_status={'устаревшая запись' if is_legacy else 'актуальная запись'}",
+                    f"last_status={state.last_status or '—'}",
+                    f"last_error={state.last_error or '—'}",
+                    f"last_cycle={dt(state.last_cycle_at)}",
+                ]
+            )
         )
-    lines.extend(["", "recent_errors:"])
+        lines.append("")
+    lines.extend(["Recent errors:"])
     if not recent_errors:
         lines.append("—")
     for log, position in recent_errors:
         amount = position.robux_amount if position else log.position_id
-        lines.append(f"{dt(log.created_at)} position={amount} raw_reason={log.reason or '—'}")
-    lines.append(SEPARATOR)
+        lines.extend(_quote_lines([f"{dt(log.created_at)} position={amount} raw_reason={log.reason or '—'}"]))
     return "\n".join(lines)
 
 
@@ -1609,6 +1520,10 @@ def _clamp_page(page: int, total: int) -> int:
     if total <= 0:
         return 0
     return max(0, min(page, total - 1))
+
+
+def _quote_lines(lines: list[str]) -> list[str]:
+    return [f"> {line}" if line else ">" for line in lines]
 
 
 def _lot_id_text(position: Position) -> str:

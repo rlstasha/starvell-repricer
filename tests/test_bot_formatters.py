@@ -19,11 +19,13 @@ from app.bot.formatters import (
     format_worker_servers,
 )
 from app.bot.keyboards import (
+    general_settings_keyboard,
     logs_pagination_keyboard,
     main_menu_keyboard,
     misc_menu_keyboard,
     position_card_keyboard,
     proxy_pagination_keyboard,
+    status_sections_keyboard,
 )
 from app.core.config import Settings
 from app.db.models import (
@@ -208,13 +210,13 @@ def test_general_settings_are_proxy_aware() -> None:
         group_infos=settings.worker_group_infos,
     )
 
-    assert "🌐 Режим запросов: прокси" in text
-    assert "🚦 Общий лимит: 300/мин" in text
-    assert "🧠 Эффективный лимит аккаунта: 300/мин" in text
-    assert "💰 Изменение цен:" in text
+    assert "🌐 Режим:\nпрокси" in text
+    assert "🚦 Лимит:\n300/300 в минуту" in text
+    assert "💰 Реальные цены:" in text
     assert "❌ только анализ" in text
-    assert "🚀 Fast 1" in text
-    assert "500 · 800 · 1000" in text
+    assert "Настройки лотов меняются в карточке позиции." in text
+    assert "🚀 Fast 1" not in text
+    assert "500 · 800 · 1000" not in text
     assert "High:" not in text
     assert "Normal:" not in text
 
@@ -245,12 +247,14 @@ def test_main_menu_is_compact_and_russian() -> None:
     )
 
     assert "🤖 Starvell Repricer" in text
-    assert "💰 Изменение цен:\n✅ активно" in text
+    assert "💰 Реальные цены:\n✅ активно" in text
     assert "🤖 Worker:\n✅ активен" in text
     assert "🌐 Прокси:\n✅ 1/3" in text
     assert "🚦 Нагрузка:\n258/300" in text
-    assert "📉 Замедление:\nнет" in text
+    assert "🧯 Ошибки:\nнет" in text
     assert "Proxy capacity" not in text
+    assert "request_usage" not in text
+    assert "last429" not in text
 
 
 def test_main_menu_keyboard_keeps_technical_sections_in_misc() -> None:
@@ -280,6 +284,29 @@ def test_misc_menu_contains_technical_sections() -> None:
     assert "scheduler:show" in callbacks
     assert "errors:show" in callbacks
     assert "technical:status" in callbacks
+
+
+def test_section_keyboards_do_not_leak_unrelated_buttons() -> None:
+    status_callbacks = [
+        button.callback_data
+        for row in status_sections_keyboard().inline_keyboard
+        for button in row
+    ]
+    settings_callbacks = [
+        button.callback_data
+        for row in general_settings_keyboard(dry_run=False).inline_keyboard
+        for button in row
+    ]
+    proxy_callbacks = [
+        button.callback_data
+        for row in proxy_pagination_keyboard(page=0, total=3).inline_keyboard
+        for button in row
+    ]
+
+    assert status_callbacks == ["status:show", "menu:main"]
+    assert settings_callbacks == ["menu:main"]
+    assert "limits:show" not in proxy_callbacks
+    assert "proxies:refresh:0" in proxy_callbacks
 
 
 def test_status_overview_is_short_and_proxy_aware() -> None:
@@ -321,14 +348,14 @@ def test_status_overview_is_short_and_proxy_aware() -> None:
         group_infos=settings.worker_group_infos,
     )
 
-    assert "📊 Статус репрайсера" in text
+    assert "📊 Статус" in text
     assert "🤖 Worker:\n✅ активен" in text
-    assert "💰 Изменение цен:\n✅ активно" in text
+    assert "💰 Реальные цены:\n✅ активно" in text
     assert "🌐 Прокси:\n✅ активны (1/3)" in text
     assert "🚦 Нагрузка:\n258/300" in text
-    assert "📉 Замедление:\nнет" in text
-    assert "800 робуксов" in text
-    assert "580.70 ₽" in text
+    assert "🧯 Ошибки:\nнет" in text
+    assert "800 робуксов" not in text
+    assert "580.70 ₽" not in text
     assert "High:" not in text
     assert "Proxy capacity" not in text
 
@@ -434,11 +461,12 @@ def test_limits_screen_uses_russian_labels() -> None:
     )
 
     assert "🚦 Лимиты" in text
-    assert "🌐 Пропускная способность:" in text
+    assert "🌐 Общая мощность:" in text
     assert "🧠 Лимит аккаунта:" in text
     assert "Fast1: 82/100" in text
     assert "Итого:\n258/300" in text
     assert "📉 Замедление:\nнет" in text
+    assert "Последний 429" not in text
     assert "Proxy capacity" not in text
     assert "Backoff" not in text
 
@@ -462,7 +490,7 @@ def test_scheduler_screen_is_separate_from_limits() -> None:
         heartbeats=[heartbeat],
     )
 
-    assert "🧠 Умный планировщик" in text
+    assert "🧠 Планировщик" in text
     assert "🚀 Fast1" in text
     assert "Интервал:\n1.5–3.5 сек" in text
     assert "Текущий:\n2.3 сек" in text
@@ -569,7 +597,7 @@ def test_limits_screen_shows_effective_limit_backoff_and_last_429() -> None:
 
     assert "Fast1: 0/100" in text
     assert "📉 Замедление:\nактивно" in text
-    assert "🚫 Последний 429:\n15.05.2026 22:10" in text
+    assert "Последний 429" not in text
 
 
 def test_position_card_uses_effective_proxy_frequency_after_backoff() -> None:
@@ -649,8 +677,8 @@ def test_errors_screen_explains_safe_mode_without_technical_links() -> None:
     )
 
     assert "🧯 Ошибки" in text
-    assert "429:\nнет" in text
     assert "Прокси:\nесть предупреждения" in text
+    assert "Последняя ошибка:\nнет" in text
     assert "developer.mozilla.org" not in text
 
 

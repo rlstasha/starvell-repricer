@@ -43,11 +43,7 @@ def back_to_misc_keyboard() -> InlineKeyboardMarkup:
 def status_sections_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [
-                InlineKeyboardButton(text="💰 Изменение цен", callback_data="price:status"),
-                InlineKeyboardButton(text="📝 Последние действия", callback_data="logs:recent"),
-            ],
-            [InlineKeyboardButton(text="📂 Прочее", callback_data="misc:show")],
+            [InlineKeyboardButton(text="🔄 Обновить", callback_data="status:show")],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:main")],
         ]
     )
@@ -101,12 +97,7 @@ def proxy_pagination_keyboard(*, page: int, total: int) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     if navigation:
         rows.append(navigation)
-    rows.append(
-        [
-            InlineKeyboardButton(text="🚦 Лимиты", callback_data="limits:show"),
-            InlineKeyboardButton(text="🔄 Обновить", callback_data=f"proxies:refresh:{page}"),
-        ]
-    )
+    rows.append([InlineKeyboardButton(text="🔄 Обновить", callback_data=f"proxies:refresh:{page}")])
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="misc:show")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -177,15 +168,8 @@ def position_card_keyboard(position: Position) -> InlineKeyboardMarkup:
 
 
 def general_settings_keyboard(*, dry_run: bool) -> InlineKeyboardMarkup:
-    price_change_text = (
-        "💰 Включить изменение цен"
-        if dry_run
-        else "🛑 Остановить изменение цен"
-    )
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text=price_change_text, callback_data="settings:toggle_dry_run")],
-            [InlineKeyboardButton(text="📊 Статус", callback_data="status:show")],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:main")],
         ]
     )
