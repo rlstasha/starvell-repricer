@@ -842,3 +842,25 @@ def test_logs_hide_technical_http_links_from_old_errors() -> None:
 
     assert "Причина:\nСайт ограничил частоту запросов." in text
     assert "developer.mozilla.org" not in text
+
+
+def test_logs_translate_min_price_bounce_reason() -> None:
+    position = _position(500, "2000")
+    log = PriceUpdateLog(
+        position_id=1,
+        status=UpdateStatus.SUCCESS.value,
+        reason="min_price_bounce_to_upper_competitor",
+        old_price=Decimal("75.00"),
+        competitor_price=Decimal("90.00"),
+        new_price=Decimal("89.90"),
+        created_at=datetime(2026, 5, 15, 19, 10, tzinfo=UTC),
+    )
+
+    text = format_logs([(position, log)])
+
+    assert (
+        "Причина:\nБлижайший конкурент ниже минимальной цены, "
+        "выбран следующий конкурент выше минимума."
+    ) in text
+    assert "🏆 Конкурент:\n90.00 ₽" in text
+    assert "📉 Расчетная:\n89.90 ₽" in text

@@ -45,6 +45,15 @@ REASON_LABELS = {
     "competitor_undercut": (
         "Найден конкурент. Расчетная цена ниже на шаг."
     ),
+    "min_price_bounce_to_upper_competitor": (
+        "Ближайший конкурент ниже минимальной цены, выбран следующий конкурент выше минимума."
+    ),
+    "all_competitors_below_min_price": (
+        "Все подходящие конкуренты ниже минимальной цены. Цена оставлена на минимуме."
+    ),
+    "competitor_above_min_but_step_hits_min": (
+        "Конкурент выше минимума найден, но шаг упирается в минимальную цену."
+    ),
     "already_at_target": "Цена уже равна расчетной.",
     "dry_run": "Только анализ. Цена не изменена.",
     "updated": "Цена обновлена.",
@@ -77,6 +86,15 @@ CHECK_HINTS = {
     ),
     "no_competitors_keep_current_price": (
         "фильтр рейтинга, категорию, список конкурентов"
+    ),
+    "min_price_bounce_to_upper_competitor": (
+        "цену конкурента выше минимума, минимальную цену и шаг"
+    ),
+    "all_competitors_below_min_price": (
+        "минимальную цену и список конкурентов выше минимума"
+    ),
+    "competitor_above_min_but_step_hits_min": (
+        "минимальную цену и размер шага"
     ),
     "missing_lot_id": "указать ID лота в карточке позиции",
     "unauthorized": "MARKET_SESSION_COOKIE и права аккаунта Starvell",

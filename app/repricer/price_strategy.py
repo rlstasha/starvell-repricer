@@ -38,13 +38,61 @@ class UndercutByStepStrategy:
         if best_competitor is None:
             return self._fallback_decision(current_own_price=current_own_price, settings=settings)
 
-        target = self._bounded(best_competitor.price - settings.step, settings)
+        raw_target = best_competitor.price - settings.step
+        if raw_target < settings.min_price:
+            return self._min_price_bounce_decision(
+                competitors=competitors,
+                current_own_price=current_own_price,
+                settings=settings,
+            )
+
+        target = self._bounded(raw_target, settings)
         return PriceDecision(
             target_price=target,
             competitor=best_competitor,
             competitor_price=best_competitor.price,
             should_update=current_own_price != target,
             reason="competitor_undercut" if current_own_price != target else "already_at_target",
+        )
+
+    def _min_price_bounce_decision(
+        self,
+        *,
+        competitors: list[MarketOffer],
+        current_own_price: Decimal | None,
+        settings: PriceCalculationSettings,
+    ) -> PriceDecision:
+        competitor_above_min = next(
+            (competitor for competitor in competitors if competitor.price > settings.min_price),
+            None,
+        )
+        if competitor_above_min is None:
+            target = self._bounded(settings.min_price, settings)
+            return PriceDecision(
+                target_price=target,
+                competitor=competitors[0],
+                competitor_price=competitors[0].price,
+                should_update=current_own_price != target,
+                reason="all_competitors_below_min_price",
+            )
+
+        raw_target = competitor_above_min.price - settings.step
+        target = self._bounded(raw_target, settings)
+        if raw_target < settings.min_price:
+            return PriceDecision(
+                target_price=target,
+                competitor=competitor_above_min,
+                competitor_price=competitor_above_min.price,
+                should_update=current_own_price != target,
+                reason="competitor_above_min_but_step_hits_min",
+            )
+
+        return PriceDecision(
+            target_price=target,
+            competitor=competitor_above_min,
+            competitor_price=competitor_above_min.price,
+            should_update=current_own_price != target,
+            reason="min_price_bounce_to_upper_competitor",
         )
 
     def _fallback_decision(
@@ -82,4 +130,3 @@ class UndercutByStepStrategy:
             raise ValueError("step must be greater than zero")
         if settings.min_price > settings.max_price:
             raise ValueError("min_price cannot be greater than max_price")
-
