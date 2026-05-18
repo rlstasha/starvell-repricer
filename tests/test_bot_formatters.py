@@ -80,7 +80,7 @@ def test_logs_show_all_position_context_for_no_competitors_keep_current_price() 
     assert "🕒 Время:\n15.05.2026 13:08" in text
     assert "📌 Статус:\nпропущено" in text
     assert "Причина:\nНет подходящих конкурентов. Цена оставлена без изменений." in text
-    assert "Что проверить:\nфильтр рейтинга, категорию, список конкурентов" in text
+    assert "Что проверить:" not in text
     assert "UTC" not in text
 
 
@@ -210,11 +210,10 @@ def test_general_settings_are_proxy_aware() -> None:
         group_infos=settings.worker_group_infos,
     )
 
-    assert "🌐 Режим:\nпрокси" in text
-    assert "🚦 Лимит:\n300/300 в минуту" in text
-    assert "💰 Реальные цены:" in text
-    assert "❌ только анализ" in text
-    assert "Настройки лотов меняются в карточке позиции." in text
+    assert text == "🛠 Управление\n\nЧто настроить?"
+    assert "🌐 Режим:" not in text
+    assert "🚦 Лимит:" not in text
+    assert "💰 Реальные цены:" not in text
     assert "🚀 Fast 1" not in text
     assert "500 · 800 · 1000" not in text
     assert "High:" not in text
@@ -266,6 +265,7 @@ def test_main_menu_keyboard_keeps_technical_sections_in_misc() -> None:
         ["status:show", "logs:recent"],
         ["settings:general", "misc:show"],
     ]
+    assert markup.inline_keyboard[2][0].text == "🛠 Управление"
 
 
 def test_misc_menu_contains_technical_sections() -> None:
@@ -304,7 +304,13 @@ def test_section_keyboards_do_not_leak_unrelated_buttons() -> None:
     ]
 
     assert status_callbacks == ["status:show", "menu:main"]
-    assert settings_callbacks == ["menu:main"]
+    assert settings_callbacks == [
+        "positions:list",
+        "price:status",
+        "proxies:show",
+        "limits:show",
+        "menu:main",
+    ]
     assert "limits:show" not in proxy_callbacks
     assert "proxies:refresh:0" in proxy_callbacks
 
@@ -729,12 +735,13 @@ def test_price_write_screen_shows_ready_state() -> None:
     )
 
     assert "💰 Изменение цен" in text
-    assert "Режим:\n✅ реальные изменения" in text
+    assert "Статус:\n✅ включено" in text
+    assert "Режим:\nреальные изменения" in text
     assert "Endpoint:\n✅ настроен" in text
-    assert "Статус:\n✅ готов" in text
-    assert "Последнее успешное изменение:" in text
-    assert "500 робуксов" in text
-    assert "ID 2000" in text
+    assert "Последнее успешное изменение:" not in text
+    assert "Последняя ошибка:" not in text
+    assert "500 робуксов" not in text
+    assert "ID 2000" not in text
 
 
 def test_price_change_toggle_result_is_clear_when_ready() -> None:
@@ -766,6 +773,23 @@ def test_price_change_toggle_result_explains_analysis_mode() -> None:
     )
 
     assert text == "🛑 Изменение цен остановлено\n\nБот продолжит анализировать рынок, но цены менять не будет."
+
+
+def test_price_write_screen_is_action_only_when_disabled() -> None:
+    text = format_price_write_screen(
+        dry_run=True,
+        real_price_writes_enabled=True,
+        price_write_endpoint_configured=True,
+        latest_price_update=None,
+        latest_price_write_error=None,
+    )
+
+    assert text == (
+        "💰 Изменение цен\n\n"
+        "Статус:\n"
+        "🛑 выключено\n\n"
+        "Бот анализирует рынок, но цены не меняет."
+    )
 
 
 def test_log_page_shows_one_action_per_page() -> None:
@@ -887,8 +911,8 @@ def test_logs_translate_min_price_bounce_reason() -> None:
     text = format_logs([(position, log)])
 
     assert (
-        "Причина:\nБлижайший конкурент ниже минимальной цены, "
-        "выбран следующий конкурент выше минимума."
+        "Причина:\nотскок от минимальной цены"
     ) in text
+    assert "Что проверить:" not in text
     assert "🏆 Конкурент:\n90.00 ₽" in text
     assert "📉 Расчетная:\n89.90 ₽" in text

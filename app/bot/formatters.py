@@ -45,15 +45,9 @@ REASON_LABELS = {
     "competitor_undercut": (
         "Найден конкурент. Расчетная цена ниже на шаг."
     ),
-    "min_price_bounce_to_upper_competitor": (
-        "Ближайший конкурент ниже минимальной цены, выбран следующий конкурент выше минимума."
-    ),
-    "all_competitors_below_min_price": (
-        "Все подходящие конкуренты ниже минимальной цены. Цена оставлена на минимуме."
-    ),
-    "competitor_above_min_but_step_hits_min": (
-        "Конкурент выше минимума найден, но шаг упирается в минимальную цену."
-    ),
+    "min_price_bounce_to_upper_competitor": "отскок от минимальной цены",
+    "all_competitors_below_min_price": "все конкуренты ниже минимума",
+    "competitor_above_min_but_step_hits_min": "шаг упирается в минимум",
     "already_at_target": "Цена уже равна расчетной.",
     "dry_run": "Только анализ. Цена не изменена.",
     "updated": "Цена обновлена.",
@@ -84,18 +78,6 @@ CHECK_HINTS = {
         "подключение Starvell, цену конкурента, "
         "мою текущую цену"
     ),
-    "no_competitors_keep_current_price": (
-        "фильтр рейтинга, категорию, список конкурентов"
-    ),
-    "min_price_bounce_to_upper_competitor": (
-        "цену конкурента выше минимума, минимальную цену и шаг"
-    ),
-    "all_competitors_below_min_price": (
-        "минимальную цену и список конкурентов выше минимума"
-    ),
-    "competitor_above_min_but_step_hits_min": (
-        "минимальную цену и размер шага"
-    ),
     "missing_lot_id": "указать ID лота в карточке позиции",
     "unauthorized": "MARKET_SESSION_COOKIE и права аккаунта Starvell",
     "forbidden": "доступ аккаунта Starvell и паузу перед следующей проверкой",
@@ -103,6 +85,23 @@ CHECK_HINTS = {
     "rate_limited": "лимит запросов и паузу между проверками",
 }
 MISSING_REASON_TEXT = "Причина не записана. Нужно проверить лог worker."
+ACTIONABLE_HINT_REASONS = {
+    "missing_lot_id",
+    "no_target_price",
+    "price_update_endpoint_missing",
+    "price_update_payload_unknown",
+    "real_price_writes_disabled",
+    "position_disabled",
+    "price_out_of_range",
+    "target_price_out_of_range",
+    "price_below_min",
+    "price_above_max",
+    "unauthorized",
+    "forbidden",
+    "timeout",
+    "rate_limited",
+    "starvell_server_error",
+}
 
 
 def money(value: Decimal | None) -> str:
@@ -426,49 +425,11 @@ def format_general_settings(
     group_infos: list[WorkerGroupInfo] | None = None,
     heartbeats: list[WorkerHeartbeat] | None = None,
 ) -> str:
-    if _use_proxy_ui(proxy_mode) and group_infos:
-        display_heartbeats = _current_group_heartbeats(heartbeats or [], group_infos)
-        effective_account_limit = _account_effective_limit(display_heartbeats, global_limit or request_limit)
-        lines = [
-            "⚙️ Настройки",
-            "",
-            "💰 Реальные цены:",
-            _price_change_state_line(
-                dry_run=dry_run,
-                real_price_writes_enabled=real_price_writes_enabled,
-                endpoint_configured=price_write_endpoint_configured,
-            ),
-            "",
-            "🌐 Режим:",
-            "прокси",
-            "",
-            "🚦 Лимит:",
-            f"{effective_account_limit}/{global_limit or request_limit} в минуту",
-            "",
-            "Настройки лотов меняются в карточке позиции.",
-        ]
-        return "\n".join(lines)
-
-    high_budget = _request_budget(request_limit, high_percent)
-    normal_budget = _request_budget(request_limit, normal_percent)
     return "\n".join(
         [
-            "⚙️ Настройки",
+            "🛠 Управление",
             "",
-            "💰 Реальные цены:",
-            _price_change_state_line(
-                dry_run=dry_run,
-                real_price_writes_enabled=real_price_writes_enabled,
-                endpoint_configured=price_write_endpoint_configured,
-            ),
-            f"🚦 Общий лимит: {request_limit}/мин",
-            "",
-            "⚡ Распределение",
-            f"• High: {high_percent}% = {high_budget}/мин",
-            f"• Normal: {normal_percent}% = {normal_budget}/мин",
-            "",
-            "Настройки конкретной позиции меняются "
-            "в ее карточке.",
+            "Что настроить?",
         ]
     )
 
@@ -553,34 +514,26 @@ def format_price_write_screen(
     latest_price_write_error: tuple[PriceUpdateLog, Position | None] | None,
 ) -> str:
     ready = (not dry_run) and real_price_writes_enabled and price_write_endpoint_configured
+    lines = [
+        "💰 Изменение цен",
+        "",
+        "Статус:",
+        "✅ включено" if not dry_run else "🛑 выключено",
+    ]
     if dry_run:
-        status = "⚠️ только анализ"
-    elif not real_price_writes_enabled:
-        status = "⚠️ реальные записи отключены"
-    elif not price_write_endpoint_configured:
-        status = "⚠️ endpoint не настроен"
+        lines.extend(["", "Бот анализирует рынок, но цены не меняет."])
     else:
-        status = "✅ готов"
-    return "\n".join(
-        [
-            "💰 Изменение цен",
-            "",
-            "Режим:",
-            "✅ реальные изменения" if ready else "❌ только анализ",
-            "",
-            "Endpoint:",
-            "✅ настроен" if price_write_endpoint_configured else "⚠️ не настроен",
-            "",
-            "Статус:",
-            status,
-            "",
-            "Последнее успешное изменение:",
-            *_price_log_block_lines(latest_price_update),
-            "",
-            "Последняя ошибка:",
-            *_price_log_block_lines(latest_price_write_error, include_reason=True),
-        ]
-    )
+        lines.extend(
+            [
+                "",
+                "Режим:",
+                "реальные изменения" if ready else "только анализ",
+                "",
+                "Endpoint:",
+                "✅ настроен" if price_write_endpoint_configured else "⚠️ не настроен",
+            ]
+        )
+    return "\n".join(lines)
 
 
 def format_price_write_test_hint() -> str:
@@ -1396,6 +1349,8 @@ def _ignore_reason_label(reason: str | None) -> str:
 
 
 def _check_hint(reason_key: str, status: str) -> str | None:
+    if reason_key not in ACTIONABLE_HINT_REASONS and status not in {"failed", "error"}:
+        return None
     if reason_key in CHECK_HINTS:
         return CHECK_HINTS[reason_key]
     if reason_key == "dry_run":
