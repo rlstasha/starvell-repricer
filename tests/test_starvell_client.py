@@ -12,6 +12,7 @@ from app.market.client import (
     parse_starvell_market_offers,
     parse_starvell_market_offers_payload,
     parse_starvell_own_lot,
+    safe_starvell_error_reason,
 )
 from app.market.exceptions import StarvellEndpointNotConfiguredError, StarvellWriteDisabledError
 from app.repricer.rate_limiter import InMemoryFixedWindowRateLimiter
@@ -759,3 +760,45 @@ def test_explain_http_status_returns_human_russian_text() -> None:
     assert "доступ запрещен" in explain_http_status(403)
     assert "ограничил частоту" in explain_http_status(429)
     assert "ошибка на стороне Starvell" in explain_http_status(500)
+
+
+def test_safe_error_reason_classifies_socks_malformed_reply() -> None:
+    exc = httpx.ProxyError("socksio.exceptions.ProtocolError: Malformed reply")
+
+    assert safe_starvell_error_reason(exc) == "proxy_malformed_reply"
+
+
+@pytest.mark.asyncio
+async def test_starvell_client_applies_proxy_backoff_on_transport_error() -> None:
+    class RecordingLimiter:
+        def __init__(self) -> None:
+            self.backoffs: list[str | None] = []
+
+        async def acquire(self) -> None:
+            return None
+
+        def apply_backoff(self, error_kind: str | None = None) -> float:
+            self.backoffs.append(error_kind)
+            return 1.0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ProxyError("Malformed reply")
+
+    client = httpx.AsyncClient(
+        base_url="https://starvell.example",
+        transport=httpx.MockTransport(handler),
+    )
+    settings = Settings(_env_file=None, market_base_url="https://starvell.example")
+    limiter = RecordingLimiter()
+
+    async with StarvellClient(
+        settings,
+        limiter,
+        client,
+        proxy_profile="fast_1",
+        proxy_url="socks5://login:password@1.2.3.4:1080",
+    ) as starvell:
+        with pytest.raises(httpx.ProxyError):
+            await starvell.fetch_text("/api/test", request_type="test")
+
+    assert limiter.backoffs == ["proxy", "proxy"]

@@ -549,6 +549,22 @@ class RepricerScheduler:
             return "403"
         if normalized == "timeout" or "timeout" in normalized or "таймаут" in normalized:
             return "timeout"
+        if (
+            normalized
+            in {
+                "proxy_error",
+                "proxy_malformed_reply",
+                "proxy_connect_error",
+                "network_error",
+            }
+            or "proxy" in normalized
+            or "socks" in normalized
+            or "malformed reply" in normalized
+            or "protocolerror" in normalized
+            or "connecterror" in normalized
+            or "server disconnected" in normalized
+        ):
+            return "proxy"
         return "failed"
 
     def _worker_state_name(self) -> str:
@@ -611,6 +627,8 @@ class RepricerScheduler:
         if error_kind == "403" and self.settings.safe_mode_on_403:
             return True
         if error_kind == "timeout":
+            return True
+        if error_kind == "proxy":
             return True
         return self.consecutive_errors >= self.settings.worker_safe_mode_error_threshold
 

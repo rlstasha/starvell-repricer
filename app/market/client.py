@@ -145,21 +145,34 @@ class StarvellClient:
         self.logger = get_logger(__name__)
 
     async def __aenter__(self) -> "StarvellClient":
-        if self._http_client is None:
-            client_kwargs = {
-                "base_url": self.settings.market_base_url,
-                "timeout": httpx.Timeout(30.0),
-                "headers": self._default_headers(),
-                "cookies": self._default_cookies(),
-            }
-            if self.proxy_url:
-                client_kwargs["proxy"] = self.proxy_url
-            self._http_client = httpx.AsyncClient(**client_kwargs)
+        await self._ensure_http_client()
         return self
 
     async def __aexit__(self, exc_type, exc, tb) -> None:
         if self._http_client and self._owns_http_client:
             await self._http_client.aclose()
+
+    def _http_client_kwargs(self) -> dict[str, Any]:
+        client_kwargs: dict[str, Any] = {
+            "base_url": self.settings.market_base_url,
+            "timeout": httpx.Timeout(30.0),
+            "headers": self._default_headers(),
+            "cookies": self._default_cookies(),
+        }
+        if self.proxy_url:
+            client_kwargs["proxy"] = self.proxy_url
+        return client_kwargs
+
+    async def _ensure_http_client(self) -> None:
+        if self._http_client is None:
+            self._http_client = httpx.AsyncClient(**self._http_client_kwargs())
+
+    async def _reset_owned_http_client(self) -> None:
+        if not self._owns_http_client:
+            return
+        if self._http_client is not None:
+            await self._http_client.aclose()
+        self._http_client = httpx.AsyncClient(**self._http_client_kwargs())
 
     def _default_headers(self) -> dict[str, str]:
         headers: dict[str, str] = {}
@@ -182,8 +195,9 @@ class StarvellClient:
         request_type: str,
         **kwargs,
     ) -> httpx.Response:
+        await self._ensure_http_client()
         if self._http_client is None:
-            raise RuntimeError("StarvellClient must be used as an async context manager")
+            raise RuntimeError("StarvellClient HTTP client is not initialized")
         attempts = 2
         for attempt in range(1, attempts + 1):
             await self.rate_limiter.acquire()
@@ -203,6 +217,45 @@ class StarvellClient:
                     will_retry=attempt < attempts,
                 )
                 if attempt < attempts:
+                    await self._reset_owned_http_client()
+                    continue
+                raise
+            except httpx.TransportError as exc:
+                self._apply_transport_backoff(exc)
+                self.logger.warning(
+                    "starvell_http_transport_error",
+                    method=method,
+                    url=url,
+                    request_type=request_type,
+                    reason=safe_starvell_error_reason(exc),
+                    error_type=type(exc).__name__,
+                    proxy_profile=self.proxy_profile or "direct",
+                    proxy=mask_proxy_url(self.proxy_url),
+                    attempt=attempt,
+                    will_retry=attempt < attempts,
+                )
+                if attempt < attempts:
+                    await self._reset_owned_http_client()
+                    continue
+                raise
+            except Exception as exc:
+                if not _looks_like_proxy_transport_error(exc):
+                    raise
+                self._apply_transport_backoff(exc)
+                self.logger.warning(
+                    "starvell_proxy_transport_error",
+                    method=method,
+                    url=url,
+                    request_type=request_type,
+                    reason=safe_starvell_error_reason(exc),
+                    error_type=type(exc).__name__,
+                    proxy_profile=self.proxy_profile or "direct",
+                    proxy=mask_proxy_url(self.proxy_url),
+                    attempt=attempt,
+                    will_retry=attempt < attempts,
+                )
+                if attempt < attempts:
+                    await self._reset_owned_http_client()
                     continue
                 raise
 
@@ -225,6 +278,10 @@ class StarvellClient:
             return response
 
         raise RuntimeError("Starvell request retry loop ended unexpectedly")
+
+    def _apply_transport_backoff(self, exc: Exception) -> None:
+        if hasattr(self.rate_limiter, "apply_backoff"):
+            self.rate_limiter.apply_backoff("proxy" if self.proxy_url else "network")
 
     async def _get_json(self, url: str, *, request_type: str) -> tuple[Any, int]:
         response = await self._request("GET", url, request_type=request_type)
@@ -799,8 +856,45 @@ def safe_starvell_error_reason(exc: Exception) -> str:
         return f"http_{status_code}"
     if isinstance(exc, httpx.TimeoutException):
         return "timeout"
+    if _looks_like_proxy_transport_error(exc):
+        normalized = _exception_chain_text(exc).lower()
+        if "malformed reply" in normalized:
+            return "proxy_malformed_reply"
+        if isinstance(exc, httpx.ConnectError) or "connecterror" in normalized:
+            return "proxy_connect_error"
+        if isinstance(exc, httpx.ProxyError) or "proxy" in normalized or "socks" in normalized:
+            return "proxy_error"
+        return "network_error"
     reason = str(exc).strip()
     return reason or type(exc).__name__
+
+
+def _looks_like_proxy_transport_error(exc: Exception) -> bool:
+    if isinstance(exc, httpx.TransportError):
+        return True
+    normalized = _exception_chain_text(exc).lower()
+    markers = (
+        "socks",
+        "malformed reply",
+        "proxy",
+        "clientconnectorerror",
+        "connecterror",
+        "networkerror",
+        "protocolerror",
+        "server disconnected",
+    )
+    return any(marker in normalized for marker in markers)
+
+
+def _exception_chain_text(exc: BaseException) -> str:
+    parts: list[str] = []
+    current: BaseException | None = exc
+    while current is not None:
+        parts.append(
+            f"{type(current).__module__}.{type(current).__name__}: {str(current)}"
+        )
+        current = current.__cause__ or current.__context__
+    return " <- ".join(parts)
 
 
 def _format_price_update_url(
