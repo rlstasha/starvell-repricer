@@ -1,19 +1,26 @@
 import asyncio
+import contextlib
+import random
+import time
+from pathlib import Path
 
 from aiogram import Bot, Dispatcher
+from aiogram.exceptions import TelegramNetworkError
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiohttp import ClientConnectorError
 from redis.asyncio import Redis
 
 from app.bot.handlers.positions import router as positions_router
 from app.bot.handlers.settings import router as settings_router
 from app.bot.handlers.start import router as start_router
-from app.bot.middlewares import OwnerOnlyMiddleware
+from app.bot.middlewares import CallbackSafetyMiddleware, OwnerOnlyMiddleware
 from app.core.config import get_settings
 from app.core.logging import configure_logging, get_logger
 from app.db.repositories import AppSettingsRepository, PositionRepository
 from app.db.session import create_session_factory
 
 logger = get_logger(__name__)
+BOT_HEALTHCHECK_FILE = Path("/tmp/starvell_bot_polling_heartbeat")
 
 
 async def main() -> None:
@@ -52,6 +59,7 @@ async def main() -> None:
     owner_middleware = OwnerOnlyMiddleware(settings)
     dispatcher.message.middleware(owner_middleware)
     dispatcher.callback_query.middleware(owner_middleware)
+    dispatcher.callback_query.middleware(CallbackSafetyMiddleware())
 
     dispatcher.include_router(start_router)
     dispatcher.include_router(positions_router)
@@ -59,10 +67,60 @@ async def main() -> None:
 
     logger.info("repricer_bot_started")
     try:
-        await dispatcher.start_polling(bot)
+        await _run_polling_forever(dispatcher, bot)
     finally:
         await redis.aclose()
         await bot.session.close()
+
+
+async def _run_polling_forever(dispatcher: Dispatcher, bot: Bot) -> None:
+    attempt = 0
+    while True:
+        heartbeat_task = asyncio.create_task(_polling_heartbeat(), name="telegram-polling-heartbeat")
+        try:
+            logger.info(
+                "telegram_polling_restarted" if attempt else "telegram_polling_started",
+                attempt=attempt + 1,
+            )
+            await dispatcher.start_polling(bot)
+        except (TelegramNetworkError, ClientConnectorError, TimeoutError, OSError) as exc:
+            attempt += 1
+            delay = _polling_retry_delay(attempt)
+            logger.warning(
+                "telegram_api_unavailable",
+                attempt=attempt,
+                retry_after_seconds=round(delay, 2),
+                error_type=type(exc).__name__,
+            )
+            await asyncio.sleep(delay)
+        except Exception as exc:
+            attempt += 1
+            delay = 10.0
+            logger.exception(
+                "telegram_polling_failed",
+                attempt=attempt,
+                retry_after_seconds=delay,
+                error_type=type(exc).__name__,
+            )
+            await asyncio.sleep(delay)
+        else:
+            logger.info("telegram_polling_stopped")
+            return
+        finally:
+            heartbeat_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await heartbeat_task
+
+
+async def _polling_heartbeat() -> None:
+    while True:
+        BOT_HEALTHCHECK_FILE.write_text(str(time.time()))
+        await asyncio.sleep(15)
+
+
+def _polling_retry_delay(attempt: int) -> float:
+    base = min(5 + max(attempt - 1, 0) * 2, 15)
+    return random.uniform(5, base)
 
 
 if __name__ == "__main__":

@@ -32,7 +32,7 @@ PROFILE_TIMINGS = {
     WORKER_GROUP_FAST_1: ProfileTiming(
         base_seconds=1.8,
         min_seconds=1.5,
-        max_seconds=3.5,
+        max_seconds=2.7,
         normal_min_seconds=1.5,
         normal_max_seconds=2.2,
         backoff_min_seconds=2.5,
@@ -41,7 +41,7 @@ PROFILE_TIMINGS = {
     WORKER_GROUP_FAST_2: ProfileTiming(
         base_seconds=2.4,
         min_seconds=2.0,
-        max_seconds=4.5,
+        max_seconds=3.0,
         normal_min_seconds=2.0,
         normal_max_seconds=3.0,
         backoff_min_seconds=3.0,
@@ -57,6 +57,16 @@ PROFILE_TIMINGS = {
         backoff_max_seconds=8.0,
     ),
 }
+ULTRA_FAST_POSITION_AMOUNT = 500
+ULTRA_FAST_TIMING = ProfileTiming(
+    base_seconds=1.0,
+    min_seconds=0.8,
+    max_seconds=1.3,
+    normal_min_seconds=0.8,
+    normal_max_seconds=1.3,
+    backoff_min_seconds=2.0,
+    backoff_max_seconds=4.0,
+)
 DEFAULT_TIMING = ProfileTiming(
     base_seconds=6.0,
     min_seconds=3.0,
@@ -70,6 +80,12 @@ DEFAULT_TIMING = ProfileTiming(
 
 def timing_for_group(worker_group: str) -> ProfileTiming:
     return PROFILE_TIMINGS.get(worker_group, DEFAULT_TIMING)
+
+
+def timing_for_position(worker_group: str, position_amount: int | None) -> ProfileTiming:
+    if worker_group == WORKER_GROUP_FAST_1 and position_amount == ULTRA_FAST_POSITION_AMOUNT:
+        return ULTRA_FAST_TIMING
+    return timing_for_group(worker_group)
 
 
 def update_change_score(
@@ -91,13 +107,14 @@ def update_error_score(previous_score: float, *, failed: bool) -> float:
 def choose_dynamic_delay(
     *,
     worker_group: str,
+    position_amount: int | None = None,
     change_score: float,
     error_score: float = 0.0,
     backoff_active: bool = False,
     previous_delay_seconds: float | None = None,
     random_uniform=random.uniform,
 ) -> DelayDecision:
-    timing = timing_for_group(worker_group)
+    timing = timing_for_position(worker_group, position_amount)
 
     if backoff_active:
         delay = random_uniform(timing.backoff_min_seconds, timing.backoff_max_seconds)
@@ -141,8 +158,13 @@ def choose_dynamic_delay(
     )
 
 
-def display_interval_range(worker_group: str, *, backoff_active: bool = False) -> tuple[float, float]:
-    timing = timing_for_group(worker_group)
+def display_interval_range(
+    worker_group: str,
+    *,
+    position_amount: int | None = None,
+    backoff_active: bool = False,
+) -> tuple[float, float]:
+    timing = timing_for_position(worker_group, position_amount)
     if backoff_active:
         return timing.backoff_min_seconds, timing.backoff_max_seconds
     return timing.normal_min_seconds, timing.normal_max_seconds

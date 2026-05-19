@@ -96,6 +96,13 @@ def test_account_effective_limit_defaults_to_full_proxy_capacity() -> None:
     assert settings.account_min_limit_per_minute == 60
 
 
+def test_request_pacing_defaults_are_fast_when_proxies_are_healthy() -> None:
+    settings = Settings(_env_file=None)
+
+    assert settings.request_min_delay_ms == 100
+    assert settings.request_jitter_ms == 50
+
+
 def test_price_write_settings_default_to_safe_analysis_mode() -> None:
     settings = Settings(
         _env_file=None,

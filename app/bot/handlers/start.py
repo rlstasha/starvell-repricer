@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio.session import AsyncSession
 from app.bot.formatters import format_main_menu
 from app.bot.keyboards import main_menu_keyboard
 from app.bot.status_context import load_telegram_status_context
-from app.bot.ui import cleanup_pending_prompt, safe_edit_text
+from app.bot.ui import cleanup_pending_prompt, safe_callback_answer, safe_edit_text
 from app.core.config import Settings
 
 router = Router()
@@ -79,4 +79,4 @@ async def main_menu(
         ),
         reply_markup=main_menu_keyboard(dry_run=status_context.dry_run),
     )
-    await callback.answer()
+    await safe_callback_answer(callback)

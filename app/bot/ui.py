@@ -1,9 +1,17 @@
-from aiogram.exceptions import TelegramBadRequest
+from collections import OrderedDict
+
+from aiohttp import ClientConnectorError
+from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 
+from app.core.logging import get_logger
+
 
 MAX_MESSAGE_LENGTH = 3900
+_ANSWERED_CALLBACK_IDS: OrderedDict[str, None] = OrderedDict()
+_MAX_TRACKED_CALLBACK_IDS = 1000
+logger = get_logger(__name__)
 
 
 async def cleanup_pending_prompt(
@@ -46,7 +54,48 @@ async def send_tracked_prompt(
 
 
 async def answer_loading(callback: CallbackQuery) -> None:
-    await callback.answer("⏳ загружаю...")
+    await safe_callback_answer(callback, "⏳ загружаю...")
+
+
+async def safe_callback_answer(
+    callback: CallbackQuery,
+    text: str | None = None,
+    *,
+    show_alert: bool = False,
+    force: bool = False,
+) -> None:
+    if not force and callback.id in _ANSWERED_CALLBACK_IDS:
+        return
+    try:
+        await callback.answer(text, show_alert=show_alert)
+        _remember_callback(callback.id)
+    except TelegramBadRequest as exc:
+        logger.warning(
+            "telegram_callback_answer_failed",
+            callback_data=callback.data,
+            error_type=type(exc).__name__,
+            error=str(exc),
+        )
+    except (TelegramNetworkError, ClientConnectorError, TimeoutError, OSError) as exc:
+        logger.warning(
+            "telegram_callback_answer_network_failed",
+            callback_data=callback.data,
+            error_type=type(exc).__name__,
+        )
+
+
+async def safe_send_error(callback: CallbackQuery, text: str = "⚠️ не удалось загрузить") -> None:
+    await safe_callback_answer(callback, text, show_alert=True, force=True)
+    if callback.message is None:
+        return
+    try:
+        await callback.message.answer(text)
+    except (TelegramBadRequest, TelegramNetworkError, ClientConnectorError, TimeoutError, OSError) as exc:
+        logger.warning(
+            "telegram_callback_error_message_failed",
+            callback_data=callback.data,
+            error_type=type(exc).__name__,
+        )
 
 
 async def safe_edit_text(
@@ -61,9 +110,22 @@ async def safe_edit_text(
     except TelegramBadRequest as exc:
         if "message is not modified" in str(exc).lower():
             return
-        await callback.message.answer(
-            "⚠️ не удалось загрузить. Попробуйте открыть раздел еще раз.",
-            reply_markup=reply_markup,
+        try:
+            await callback.message.answer(
+                "⚠️ не удалось загрузить. Попробуйте открыть раздел еще раз.",
+                reply_markup=reply_markup,
+            )
+        except (TelegramBadRequest, TelegramNetworkError, ClientConnectorError, TimeoutError, OSError) as send_exc:
+            logger.warning(
+                "telegram_safe_edit_fallback_failed",
+                callback_data=callback.data,
+                error_type=type(send_exc).__name__,
+            )
+    except (TelegramNetworkError, ClientConnectorError, TimeoutError, OSError) as exc:
+        logger.warning(
+            "telegram_safe_edit_network_failed",
+            callback_data=callback.data,
+            error_type=type(exc).__name__,
         )
 
 
@@ -72,3 +134,10 @@ def _fit_message(text: str) -> str:
         return text
     suffix = "\n\n… сообщение сокращено, потому что Telegram ограничивает длину."
     return text[: MAX_MESSAGE_LENGTH - len(suffix)].rstrip() + suffix
+
+
+def _remember_callback(callback_id: str) -> None:
+    _ANSWERED_CALLBACK_IDS[callback_id] = None
+    _ANSWERED_CALLBACK_IDS.move_to_end(callback_id)
+    while len(_ANSWERED_CALLBACK_IDS) > _MAX_TRACKED_CALLBACK_IDS:
+        _ANSWERED_CALLBACK_IDS.popitem(last=False)

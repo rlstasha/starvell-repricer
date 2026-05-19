@@ -7,7 +7,6 @@ from sqlalchemy.ext.asyncio.session import AsyncSession
 
 from app.bot.formatters import (
     format_errors_screen,
-    format_general_settings,
     format_log_page,
     format_limits_screen,
     format_main_menu,
@@ -23,7 +22,6 @@ from app.bot.formatters import (
 from app.bot.keyboards import (
     back_to_main_keyboard,
     back_to_misc_keyboard,
-    general_settings_keyboard,
     logs_pagination_keyboard,
     main_menu_keyboard,
     misc_menu_keyboard,
@@ -32,7 +30,7 @@ from app.bot.keyboards import (
     status_sections_keyboard,
 )
 from app.bot.status_context import load_telegram_status_context
-from app.bot.ui import answer_loading, cleanup_pending_prompt, safe_edit_text
+from app.bot.ui import answer_loading, cleanup_pending_prompt, safe_callback_answer, safe_edit_text
 from app.core.config import Settings
 from app.db.repositories import (
     AppSettingsRepository,
@@ -42,36 +40,6 @@ from app.db.repositories import (
 )
 
 router = Router()
-
-
-@router.callback_query(lambda query: query.data == "settings:general")
-async def general_settings(
-    callback: CallbackQuery,
-    session_factory: async_sessionmaker[AsyncSession],
-    settings: Settings,
-    state: FSMContext,
-) -> None:
-    await cleanup_pending_prompt(state, callback.bot, clear_state=True)
-    await answer_loading(callback)
-    async with session_factory() as session:
-        dry_run = await AppSettingsRepository(session).get_bool("dry_run", settings.dry_run)
-        heartbeats = await WorkerHeartbeatRepository(session).list_all()
-    await safe_edit_text(
-        callback,
-        format_general_settings(
-            dry_run=dry_run,
-            request_limit=settings.request_limit_per_minute,
-            high_percent=settings.high_priority_percent,
-            normal_percent=settings.normal_priority_percent,
-            real_price_writes_enabled=settings.enable_real_price_writes,
-            price_write_endpoint_configured=bool(settings.market_update_lot_price_url),
-            proxy_mode=settings.proxy_mode,
-            global_limit=settings.global_request_limit_per_minute,
-            group_infos=settings.worker_group_infos,
-            heartbeats=heartbeats,
-        ),
-        reply_markup=general_settings_keyboard(dry_run=dry_run),
-    )
 
 
 @router.callback_query(lambda query: query.data == "settings:toggle_dry_run")
@@ -115,7 +83,7 @@ async def toggle_dry_run(
         ),
         reply_markup=main_menu_keyboard(dry_run=status_context.dry_run),
     )
-    await callback.answer(text, show_alert=True)
+    await safe_callback_answer(callback, text, show_alert=True, force=True)
 
 
 @router.callback_query(lambda query: query.data == "status:show")

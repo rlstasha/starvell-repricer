@@ -5,6 +5,7 @@ from app.repricer.rate_limiter import (
     InMemoryFixedWindowRateLimiter,
     adaptive_backoff_seconds,
     retry_after_delay_seconds,
+    transport_backoff_seconds,
 )
 
 
@@ -26,6 +27,17 @@ def test_adaptive_backoff_steps_are_human_scale() -> None:
         8.0,
         15.0,
         15.0,
+    ]
+
+
+def test_transport_backoff_steps_are_shorter_than_rate_limit_backoff() -> None:
+    assert [transport_backoff_seconds(index) for index in range(1, 7)] == [
+        0.2,
+        0.5,
+        1.0,
+        2.0,
+        3.0,
+        3.0,
     ]
 
 
@@ -52,6 +64,27 @@ async def test_composite_limiter_resets_backoff_after_success() -> None:
     limiter.reset_backoff()
     await limiter.acquire()
     assert slept == [2.0]
+
+
+@pytest.mark.asyncio
+async def test_composite_limiter_uses_short_proxy_transport_backoff() -> None:
+    slept: list[float] = []
+
+    async def sleeper(seconds: float) -> None:
+        slept.append(seconds)
+
+    limiter = CompositeRateLimiter(
+        profile_limiter=InMemoryFixedWindowRateLimiter(limit=100),
+        global_limiter=InMemoryFixedWindowRateLimiter(limit=100),
+        min_delay_ms=0,
+        jitter_ms=0,
+        sleeper=sleeper,
+    )
+
+    assert limiter.apply_backoff("proxy") == 0.2
+    assert limiter.apply_backoff("proxy") == 0.5
+    await limiter.acquire()
+    assert slept == [0.5]
 
 
 def test_retry_after_header_seconds_are_parsed() -> None:

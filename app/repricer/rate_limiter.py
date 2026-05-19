@@ -11,6 +11,7 @@ from redis.asyncio import Redis
 
 
 ADAPTIVE_BACKOFF_SECONDS = (1.0, 2.0, 4.0, 8.0, 15.0)
+TRANSPORT_BACKOFF_SECONDS = (0.2, 0.5, 1.0, 2.0, 3.0)
 TOKEN_BUCKET_SCRIPT = """
 local bucket_key = KEYS[1]
 local now = tonumber(ARGV[1])
@@ -52,6 +53,13 @@ def adaptive_backoff_seconds(consecutive_errors: int) -> float:
         return 0.0
     index = min(consecutive_errors, len(ADAPTIVE_BACKOFF_SECONDS)) - 1
     return ADAPTIVE_BACKOFF_SECONDS[index]
+
+
+def transport_backoff_seconds(consecutive_errors: int) -> float:
+    if consecutive_errors <= 0:
+        return 0.0
+    index = min(consecutive_errors, len(TRANSPORT_BACKOFF_SECONDS)) - 1
+    return TRANSPORT_BACKOFF_SECONDS[index]
 
 
 class RateLimiter(Protocol):
@@ -439,7 +447,10 @@ class CompositeRateLimiter:
 
     def apply_backoff(self, error_kind: str | None = None) -> float:
         self._consecutive_errors += 1
-        adaptive_delay_ms = adaptive_backoff_seconds(self._consecutive_errors) * 1000
+        if error_kind in {"proxy", "network"}:
+            adaptive_delay_ms = transport_backoff_seconds(self._consecutive_errors) * 1000
+        else:
+            adaptive_delay_ms = adaptive_backoff_seconds(self._consecutive_errors) * 1000
         self._extra_delay_ms = adaptive_delay_ms
         return self._extra_delay_ms / 1000
 

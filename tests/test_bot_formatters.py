@@ -3,7 +3,6 @@ from decimal import Decimal
 
 from app.bot.formatters import (
     format_errors_screen,
-    format_general_settings,
     format_log_page,
     format_limits_screen,
     format_logs,
@@ -19,7 +18,6 @@ from app.bot.formatters import (
     format_worker_servers,
 )
 from app.bot.keyboards import (
-    general_settings_keyboard,
     logs_pagination_keyboard,
     main_menu_keyboard,
     misc_menu_keyboard,
@@ -78,7 +76,7 @@ def test_logs_show_all_position_context_for_no_competitors_keep_current_price() 
     assert "📦 40 робуксов" in text
     assert "🆔 ID: не указан" in text
     assert "🕒 Время:\n15.05.2026 13:08" in text
-    assert "📌 Статус:\nпропущено" in text
+    assert "🟡 пропущено" in text
     assert "Причина:\nНет подходящих конкурентов. Цена оставлена без изменений." in text
     assert "Что проверить:" not in text
     assert "UTC" not in text
@@ -96,9 +94,9 @@ def test_logs_translate_missing_lot_id() -> None:
     text = format_logs([(position, log)])
 
     assert "📦 40 робуксов" in text
-    assert "📌 Статус:\nпропущено" in text
+    assert "🟡 пропущено" in text
     assert "Причина:\nНе найден ID лота." in text
-    assert "Что проверить:\nуказать ID лота в карточке позиции" in text
+    assert "Что проверить:" not in text
 
 
 def test_logs_include_positions_without_history() -> None:
@@ -108,7 +106,7 @@ def test_logs_include_positions_without_history() -> None:
 
     assert "📦 22500 робуксов" in text
     assert "🆔 ID: 2012" in text
-    assert "📌 Статус:\nеще не проверялась" in text
+    assert "⚪ еще не проверялась" in text
 
 
 def test_worker_servers_show_new_fast_split_and_frequency() -> None:
@@ -192,35 +190,12 @@ def test_position_card_uses_proxy_group_frequency_and_ip() -> None:
 
     assert "🌐 Прокси-группа: Fast 1" in text
     assert "🌍 IP: 45.132.20.115" in text
-    assert "⏱ Частота: 1.5–2.2 сек" in text
+    assert "⏱ Частота: 0.8–1.3 сек" in text
     assert "High-позиция" not in text
     assert "Normal" not in text
 
 
-def test_general_settings_are_proxy_aware() -> None:
-    settings = Settings(_env_file=None)
-
-    text = format_general_settings(
-        dry_run=True,
-        request_limit=settings.request_limit_per_minute,
-        high_percent=settings.high_priority_percent,
-        normal_percent=settings.normal_priority_percent,
-        proxy_mode="enabled",
-        global_limit=settings.global_request_limit_per_minute,
-        group_infos=settings.worker_group_infos,
-    )
-
-    assert text == "🛠 Управление\n\nЧто настроить?"
-    assert "🌐 Режим:" not in text
-    assert "🚦 Лимит:" not in text
-    assert "💰 Реальные цены:" not in text
-    assert "🚀 Fast 1" not in text
-    assert "500 · 800 · 1000" not in text
-    assert "High:" not in text
-    assert "Normal:" not in text
-
-
-def test_main_menu_is_compact_and_russian() -> None:
+def test_main_menu_is_minimal_start_screen() -> None:
     settings = Settings(_env_file=None)
     heartbeat = WorkerHeartbeat(
         worker_group="fast_1",
@@ -246,11 +221,12 @@ def test_main_menu_is_compact_and_russian() -> None:
     )
 
     assert "🤖 Starvell Repricer" in text
-    assert "💰 Реальные цены:\n✅ активно" in text
-    assert "🤖 Worker:\n✅ активен" in text
-    assert "🌐 Прокси:\n✅ 1/3" in text
-    assert "🚦 Нагрузка:\n258/300" in text
-    assert "🧯 Ошибки:\nнет" in text
+    assert "Автоматическое управление ценами Starvell." in text
+    assert "Выберите раздел ниже." in text
+    assert "💰 Реальные цены:" not in text
+    assert "🤖 Worker:" not in text
+    assert "🌐 Прокси:" not in text
+    assert "🚦 Нагрузка:" not in text
     assert "Proxy capacity" not in text
     assert "request_usage" not in text
     assert "last429" not in text
@@ -263,9 +239,13 @@ def test_main_menu_keyboard_keeps_technical_sections_in_misc() -> None:
     assert rows == [
         ["positions:list", "price:status"],
         ["status:show", "logs:recent"],
-        ["settings:general", "misc:show"],
+        ["misc:show"],
     ]
-    assert markup.inline_keyboard[2][0].text == "🛠 Управление"
+    assert all(
+        "Управление" not in button.text
+        for row in markup.inline_keyboard
+        for button in row
+    )
 
 
 def test_misc_menu_contains_technical_sections() -> None:
@@ -292,11 +272,6 @@ def test_section_keyboards_do_not_leak_unrelated_buttons() -> None:
         for row in status_sections_keyboard().inline_keyboard
         for button in row
     ]
-    settings_callbacks = [
-        button.callback_data
-        for row in general_settings_keyboard(dry_run=False).inline_keyboard
-        for button in row
-    ]
     proxy_callbacks = [
         button.callback_data
         for row in proxy_pagination_keyboard(page=0, total=3).inline_keyboard
@@ -304,13 +279,6 @@ def test_section_keyboards_do_not_leak_unrelated_buttons() -> None:
     ]
 
     assert status_callbacks == ["status:show", "menu:main"]
-    assert settings_callbacks == [
-        "positions:list",
-        "price:status",
-        "proxies:show",
-        "limits:show",
-        "menu:main",
-    ]
     assert "limits:show" not in proxy_callbacks
     assert "proxies:refresh:0" in proxy_callbacks
 
@@ -498,7 +466,9 @@ def test_scheduler_screen_is_separate_from_limits() -> None:
 
     assert "🧠 Планировщик" in text
     assert "🚀 Fast1" in text
-    assert "Интервал:\n1.5–3.5 сек" in text
+    assert "Интервал:\n1.5–2.7 сек" in text
+    assert "⚡ 500 робуксов:" in text
+    assert "0.8–1.3 сек через Fast 1" in text
     assert "Текущий:\n2.3 сек" in text
     assert "Нагрузка" not in text
 
@@ -630,7 +600,7 @@ def test_position_card_uses_effective_proxy_frequency_after_backoff() -> None:
     )
 
     assert "🌐 Прокси-группа: Fast 1" in text
-    assert "⏱ Частота: 2.5–4.0 сек" in text
+    assert "⏱ Частота: 2.0–4.0 сек" in text
     assert "• Текущая: 3.6 сек" in text
 
 
@@ -656,6 +626,7 @@ def test_position_card_shows_market_activity_from_schedule_state() -> None:
     )
 
     assert "🧠 Активность рынка: высокая" in text
+    assert "⏱ Частота: 0.8–1.3 сек" in text
     assert "• Текущая: 1.9 сек" in text
 
 
@@ -736,7 +707,8 @@ def test_price_write_screen_shows_ready_state() -> None:
 
     assert "💰 Изменение цен" in text
     assert "Статус:\n✅ включено" in text
-    assert "Режим:\nреальные изменения" in text
+    assert "Режим:" not in text
+    assert "реальные изменения" not in text
     assert "Endpoint:\n✅ настроен" in text
     assert "Последнее успешное изменение:" not in text
     assert "Последняя ошибка:" not in text
@@ -824,9 +796,9 @@ def test_log_page_shows_one_action_per_page() -> None:
     assert "📦 40 робуксов" in text
     assert "🆔 ID: не указан" in text
     assert "🌐 Группа: Slow" in text
-    assert "📌 Статус:\nпропущено" in text
+    assert "🟡 пропущено" in text
     assert "Причина:\nНе найден ID лота." in text
-    assert "Что проверить:\nуказать ID лота в карточке позиции" in text
+    assert "Что проверить:" not in text
     assert "500 робуксов" not in text
 
 
@@ -911,7 +883,7 @@ def test_logs_translate_min_price_bounce_reason() -> None:
     text = format_logs([(position, log)])
 
     assert (
-        "Причина:\nотскок от минимальной цены"
+        "Причина:\nконкурент ниже минимума"
     ) in text
     assert "Что проверить:" not in text
     assert "🏆 Конкурент:\n90.00 ₽" in text

@@ -12,7 +12,13 @@ from app.db.models import (
     WorkerHeartbeat,
     WorkerState,
 )
-from app.repricer.adaptive_scheduler import display_interval_range, market_activity_label, timing_for_group
+from app.repricer.adaptive_scheduler import (
+    ULTRA_FAST_POSITION_AMOUNT,
+    display_interval_range,
+    market_activity_label,
+    timing_for_group,
+    timing_for_position,
+)
 from app.repricer.worker_groups import WorkerGroupInfo
 
 
@@ -45,7 +51,7 @@ REASON_LABELS = {
     "competitor_undercut": (
         "Найден конкурент. Расчетная цена ниже на шаг."
     ),
-    "min_price_bounce_to_upper_competitor": "отскок от минимальной цены",
+    "min_price_bounce_to_upper_competitor": "конкурент ниже минимума",
     "all_competitors_below_min_price": "все конкуренты ниже минимума",
     "competitor_above_min_but_step_hits_min": "шаг упирается в минимум",
     "already_at_target": "Цена уже равна расчетной.",
@@ -167,49 +173,13 @@ def format_main_menu(
     global_limit: int = 100,
     group_infos: list[WorkerGroupInfo] | None = None,
 ) -> str:
-    group_infos = group_infos or []
-    heartbeats = heartbeats or []
-    display_heartbeats = (
-        _current_group_heartbeats(heartbeats, group_infos)
-        if _use_proxy_ui(proxy_mode) and group_infos
-        else heartbeats
-    )
-    active_proxy_count, total_proxy_count = _proxy_activity_counts(display_heartbeats, group_infos)
-    effective_limit = _account_effective_limit(display_heartbeats, global_limit)
-    account_usage = _account_usage(display_heartbeats, request_usage)
-    backoff_active = _account_backoff_active(display_heartbeats, effective_limit, global_limit)
-    worker_active = (
-        active_proxy_count > 0
-        if _use_proxy_ui(proxy_mode) and total_proxy_count > 0
-        else _worker_active(worker_state=worker_state, heartbeats=display_heartbeats)
-    )
-    proxy_line = (
-        f"✅ {active_proxy_count}/{total_proxy_count}"
-        if _use_proxy_ui(proxy_mode) and total_proxy_count > 0
-        else "напрямую"
-    )
     return "\n".join(
         [
             "🤖 Starvell Repricer",
             "",
-            "🤖 Worker:",
-            "✅ активен" if worker_active else "⚠️ не отвечает",
+            "Автоматическое управление ценами Starvell.",
             "",
-            "💰 Реальные цены:",
-            _price_change_state_line(
-                dry_run=dry_run,
-                real_price_writes_enabled=real_price_writes_enabled,
-                endpoint_configured=price_write_endpoint_configured,
-            ),
-            "",
-            "🌐 Прокси:",
-            proxy_line,
-            "",
-            "🚦 Нагрузка:",
-            f"{account_usage}/{effective_limit}",
-            "",
-            "🧯 Ошибки:",
-            "есть предупреждения" if backoff_active else "нет",
+            "Выберите раздел ниже.",
         ]
     )
 
@@ -412,28 +382,6 @@ def format_price_test(
     return "\n".join(lines)
 
 
-def format_general_settings(
-    *,
-    dry_run: bool,
-    request_limit: int,
-    high_percent: int,
-    normal_percent: int,
-    real_price_writes_enabled: bool = False,
-    price_write_endpoint_configured: bool = False,
-    proxy_mode: str = "disabled",
-    global_limit: int | None = None,
-    group_infos: list[WorkerGroupInfo] | None = None,
-    heartbeats: list[WorkerHeartbeat] | None = None,
-) -> str:
-    return "\n".join(
-        [
-            "🛠 Управление",
-            "",
-            "Что настроить?",
-        ]
-    )
-
-
 def format_price_change_toggle_result(
     *,
     dry_run: bool,
@@ -513,7 +461,6 @@ def format_price_write_screen(
     latest_price_update: tuple[PriceUpdateLog, Position | None] | None,
     latest_price_write_error: tuple[PriceUpdateLog, Position | None] | None,
 ) -> str:
-    ready = (not dry_run) and real_price_writes_enabled and price_write_endpoint_configured
     lines = [
         "💰 Изменение цен",
         "",
@@ -525,9 +472,6 @@ def format_price_write_screen(
     else:
         lines.extend(
             [
-                "",
-                "Режим:",
-                "реальные изменения" if ready else "только анализ",
                 "",
                 "Endpoint:",
                 "✅ настроен" if price_write_endpoint_configured else "⚠️ не настроен",
@@ -684,6 +628,15 @@ def format_scheduler_screen(
                 _seconds_value(getattr(heartbeat, "current_delay_seconds", None)),
             ]
         )
+        if ULTRA_FAST_POSITION_AMOUNT in info.positions:
+            ultra_timing = timing_for_position(info.name, ULTRA_FAST_POSITION_AMOUNT)
+            lines.extend(
+                [
+                    "",
+                    "⚡ 500 робуксов:",
+                    f"{_seconds_range(ultra_timing.min_seconds, ultra_timing.max_seconds)} через {info.label}",
+                ]
+            )
         if index < len(group_infos) - 1:
             lines.append("")
     return "\n".join(lines)
@@ -1269,7 +1222,7 @@ def _log_entry_lines(
     lines.extend(proxy_lines)
 
     if log is None:
-        lines.extend(["", "📌 Статус:", "еще не проверялась"])
+        lines.extend(["", _status_badge(None)])
         return lines
 
     reason_key = _reason_key(log.reason)
@@ -1281,8 +1234,7 @@ def _log_entry_lines(
     lines.extend(
         [
             "",
-            "📌 Статус:",
-            _status_label(log.status),
+            _status_badge(log.status),
             "",
             "Причина:",
             _reason_label(display_reason_key, display_reason),
@@ -1297,11 +1249,19 @@ def _log_entry_lines(
             money(log.new_price),
         ]
     )
-    hint = _check_hint(display_reason_key, log.status)
-    if hint:
-        lines.extend(["", "Что проверить:", hint])
     lines.extend(["", "🕒 Время:", dt(log.created_at)])
     return lines
+
+
+def _status_badge(status: str | None) -> str:
+    if not status:
+        return "⚪ еще не проверялась"
+    label = _status_label(status)
+    if status in {UpdateStatus.SUCCESS.value, "success", "updated"}:
+        return f"🟢 {label}"
+    if status in {UpdateStatus.FAILED.value, "failed", "error"}:
+        return f"🔴 {label}"
+    return f"🟡 {label}"
 
 
 def _status_label(status: str | None) -> str:
@@ -1584,12 +1544,18 @@ def _account_last_429(heartbeats: list[WorkerHeartbeat]) -> datetime | None:
 def _heartbeat_interval_range(
     info: WorkerGroupInfo,
     heartbeat: WorkerHeartbeat | None,
+    *,
+    position_amount: int | None = None,
 ) -> tuple[float | None, float | None]:
     min_value = getattr(heartbeat, "interval_min_seconds", None)
     max_value = getattr(heartbeat, "interval_max_seconds", None)
-    if min_value is not None and max_value is not None:
+    if position_amount is None and min_value is not None and max_value is not None:
         return float(min_value), float(max_value)
-    return display_interval_range(info.name, backoff_active=_backoff_active(info, heartbeat))
+    return display_interval_range(
+        info.name,
+        position_amount=position_amount,
+        backoff_active=_backoff_active(info, heartbeat),
+    )
 
 
 def _configured_limit(
@@ -1769,7 +1735,11 @@ def _position_proxy_context_lines(
             f"🌍 IP: {heartbeat.public_ip if heartbeat and heartbeat.public_ip else 'нет данных'}"
         )
     if include_frequency:
-        interval_min, interval_max = _heartbeat_interval_range(info, heartbeat)
+        interval_min, interval_max = _heartbeat_interval_range(
+            info,
+            heartbeat,
+            position_amount=position.robux_amount,
+        )
         if schedule_state is not None:
             lines.append(f"🧠 Активность рынка: {market_activity_label(schedule_state.change_score)}")
             lines.append(f"⏱ Частота: {_seconds_range(interval_min, interval_max)}")

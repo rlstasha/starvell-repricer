@@ -30,6 +30,7 @@ from app.repricer.adaptive_scheduler import (
     choose_dynamic_delay,
     display_interval_range,
     timing_for_group,
+    timing_for_position,
     update_change_score,
     update_error_score,
 )
@@ -39,6 +40,7 @@ from app.repricer.rate_limiter import (
     RedisAdaptiveTokenBucketRateLimiter,
     RedisTokenBucketRateLimiter,
     adaptive_backoff_seconds,
+    transport_backoff_seconds,
 )
 from app.repricer.worker_groups import (
     WORKER_GROUP_ALL,
@@ -270,7 +272,7 @@ class RepricerScheduler:
         active_amounts = {position.robux_amount for position in positions}
 
         for position in positions:
-            timing = timing_for_group(self.settings.worker_group)
+            timing = timing_for_position(self.settings.worker_group, position.robux_amount)
             existing = self.schedule_runtime.get(position.robux_amount)
             if existing is not None:
                 existing.lot_id = position.lot_id
@@ -286,7 +288,10 @@ class RepricerScheduler:
             if persisted is not None and persisted.last_checked_at is not None:
                 elapsed = (datetime.now(UTC) - persisted.last_checked_at).total_seconds()
                 next_run = now + max(current_interval - elapsed, 0.0)
-            interval_min, interval_max = display_interval_range(self.settings.worker_group)
+            interval_min, interval_max = display_interval_range(
+                self.settings.worker_group,
+                position_amount=position.robux_amount,
+            )
             self.schedule_runtime[position.robux_amount] = RuntimeScheduleState(
                 position_amount=position.robux_amount,
                 lot_id=position.lot_id,
@@ -366,15 +371,17 @@ class RepricerScheduler:
         backoff_active = self._backoff_active() or error_kind == "429"
         decision = choose_dynamic_delay(
             worker_group=self.settings.worker_group,
+            position_amount=position.robux_amount,
             change_score=change_score,
             error_score=error_score,
             backoff_active=backoff_active,
             previous_delay_seconds=state.current_interval_seconds,
         )
-        timing = timing_for_group(self.settings.worker_group)
+        timing = timing_for_position(self.settings.worker_group, position.robux_amount)
         if backoff_active:
             interval_min, interval_max = display_interval_range(
                 self.settings.worker_group,
+                position_amount=position.robux_amount,
                 backoff_active=True,
             )
         else:
@@ -405,6 +412,15 @@ class RepricerScheduler:
             change_score=round(change_score, 3),
             error_score=round(error_score, 3),
         )
+        if position.robux_amount == 500 and self.settings.worker_group == WORKER_GROUP_FAST_1 and backoff_active:
+            self.logger.warning(
+                "ultra_fast_backoff",
+                profile=self.settings.worker_group,
+                position_amount=position.robux_amount,
+                effective_delay=decision.delay_seconds,
+                reason=decision.reason,
+                last_429_at=self.last_429_at.isoformat() if self.last_429_at else None,
+            )
         return state
 
     def _filter_assigned_positions(self, positions):
@@ -506,9 +522,7 @@ class RepricerScheduler:
             self.errors_timeout += 1
 
         if self._should_enter_safe_mode(error_kind):
-            self.last_safe_mode_delay_seconds = adaptive_backoff_seconds(
-                self.consecutive_errors
-            )
+            self.last_safe_mode_delay_seconds = self._safe_mode_delay_seconds(error_kind)
             self.safe_mode_until = time.monotonic() + self.last_safe_mode_delay_seconds
 
     async def _mark_error(self, exc: Exception) -> None:
@@ -631,6 +645,11 @@ class RepricerScheduler:
         if error_kind == "proxy":
             return True
         return self.consecutive_errors >= self.settings.worker_safe_mode_error_threshold
+
+    def _safe_mode_delay_seconds(self, error_kind: str) -> float:
+        if error_kind == "proxy":
+            return transport_backoff_seconds(self.consecutive_errors)
+        return adaptive_backoff_seconds(self.consecutive_errors)
 
     def _profile_jitter_sleep_seconds(self) -> float:
         positions_count = max(len(self.settings.assigned_positions), 1)

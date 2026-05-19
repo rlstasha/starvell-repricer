@@ -14,13 +14,9 @@ def main_menu_keyboard(*, dry_run: bool) -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="📊 Статус", callback_data="status:show"),
                 InlineKeyboardButton(text="📝 Последние действия", callback_data="logs:recent"),
             ],
-            [
-                InlineKeyboardButton(text="🛠 Управление", callback_data="settings:general"),
-                InlineKeyboardButton(text="📂 Прочее", callback_data="misc:show"),
-            ],
+            [InlineKeyboardButton(text="📂 Прочее", callback_data="misc:show")],
         ]
     )
-
 
 def back_to_main_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
@@ -163,21 +159,5 @@ def position_card_keyboard(position: Position) -> InlineKeyboardMarkup:
             ],
             [InlineKeyboardButton(text="🧪 Тест расчета цены", callback_data=f"position:test_calc:{amount}")],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="positions:list")],
-        ]
-    )
-
-
-def general_settings_keyboard(*, dry_run: bool) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text="📦 Лоты", callback_data="positions:list"),
-                InlineKeyboardButton(text="💰 Изменение цен", callback_data="price:status"),
-            ],
-            [
-                InlineKeyboardButton(text="🌐 Прокси", callback_data="proxies:show"),
-                InlineKeyboardButton(text="🚦 Лимиты", callback_data="limits:show"),
-            ],
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:main")],
         ]
     )

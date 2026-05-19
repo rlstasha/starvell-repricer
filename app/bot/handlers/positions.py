@@ -12,6 +12,7 @@ from app.bot.keyboards import position_card_keyboard, positions_keyboard
 from app.bot.ui import (
     answer_loading,
     cleanup_pending_prompt,
+    safe_callback_answer,
     safe_edit_text,
     send_tracked_prompt,
 )
@@ -105,13 +106,13 @@ async def position_actions(
         return
 
     if action == "group":
-        await callback.answer("Группа и частота показаны в карточке позиции.")
+        await safe_callback_answer(callback, "Группа и частота показаны в карточке позиции.", force=True)
         return
 
     if action == "edit":
         field_name = parts[2]
         if field_name not in EDIT_LABELS:
-            await callback.answer("Неизвестная настройка.", show_alert=True)
+            await safe_callback_answer(callback, "Неизвестная настройка.", show_alert=True, force=True)
             return
         await state.set_state(EditPositionState.waiting_for_value)
         await state.update_data(amount=amount, field_name=field_name)
@@ -127,10 +128,10 @@ async def position_actions(
                 state,
                 f"Введите новую {EDIT_LABELS[field_name]}.",
             )
-        await callback.answer("Жду значение")
+        await safe_callback_answer(callback, "Жду значение", force=True)
         return
 
-    await callback.answer("Неизвестное действие.", show_alert=True)
+    await safe_callback_answer(callback, "Неизвестное действие.", show_alert=True, force=True)
 
 
 @router.message(EditPositionState.waiting_for_value)

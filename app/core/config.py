@@ -65,9 +65,9 @@ class Settings(BaseSettings):
     proxy_fast_2_request_limit_per_minute: int | None = Field(default=None, ge=1)
     proxy_slow_request_limit_per_minute: int | None = Field(default=None, ge=1)
     request_burst_limit: int = Field(default=5, ge=1)
-    request_min_delay_ms: int = Field(default=300, ge=0)
+    request_min_delay_ms: int = Field(default=100, ge=0)
     request_max_delay_ms: int = Field(default=5000, ge=0)
-    request_jitter_ms: int = Field(default=200, ge=0)
+    request_jitter_ms: int = Field(default=50, ge=0)
     request_backoff_factor: float = Field(default=2.0, ge=1.0)
     safe_mode_enabled: bool = True
     safe_mode_on_429: bool = True
