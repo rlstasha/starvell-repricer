@@ -2,8 +2,10 @@ from decimal import Decimal
 
 from app.repricer.adaptive_scheduler import (
     ULTRA_FAST_POSITION_AMOUNT,
+    apply_strategy_activity_floor,
     choose_dynamic_delay,
     display_interval_range,
+    is_active_strategy_reason,
     market_activity_label,
     timing_for_position,
     update_change_score,
@@ -78,6 +80,60 @@ def test_500_position_uses_ultrafast_timing_inside_fast_1() -> None:
     assert timing.max_seconds == 1.3
     assert decision.delay_seconds <= 1.3
     assert display_interval_range("fast_1", position_amount=500) == (0.8, 1.3)
+
+
+def test_min_price_bounce_reason_keeps_scheduler_active() -> None:
+    score = update_change_score(0.2, Decimal("90"), Decimal("90"))
+    score = apply_strategy_activity_floor(score, "min_price_bounce_to_upper_competitor")
+    decision = choose_dynamic_delay(
+        worker_group="fast_1",
+        change_score=score,
+        random_uniform=lambda low, high: high,
+    )
+
+    assert is_active_strategy_reason("min_price_bounce_to_upper_competitor") is True
+    assert is_active_strategy_reason("dry_run_would_update:min_price_bounce_to_upper_competitor") is True
+    assert score == 0.65
+    assert decision.reason == "normal"
+
+
+def test_normal_skipped_result_can_still_become_market_calm() -> None:
+    score = update_change_score(0.2, Decimal("90"), Decimal("90"))
+    score = apply_strategy_activity_floor(score, "already_at_target")
+    decision = choose_dynamic_delay(
+        worker_group="fast_1",
+        change_score=score,
+        random_uniform=lambda low, high: high,
+    )
+
+    assert score < 0.3
+    assert decision.reason == "market_calm"
+
+
+def test_backoff_still_overrides_min_price_bounce_activity() -> None:
+    score = apply_strategy_activity_floor(0.0, "all_competitors_below_min_price")
+    decision = choose_dynamic_delay(
+        worker_group="fast_1",
+        change_score=score,
+        backoff_active=True,
+        random_uniform=lambda low, high: low,
+    )
+
+    assert decision.reason == "backoff_after_429"
+    assert decision.delay_seconds >= 2.5
+
+
+def test_500_position_stays_ultrafast_with_min_price_bounce_activity() -> None:
+    score = apply_strategy_activity_floor(0.0, "competitor_above_min_but_step_hits_min")
+    decision = choose_dynamic_delay(
+        worker_group="fast_1",
+        position_amount=ULTRA_FAST_POSITION_AMOUNT,
+        change_score=score,
+        random_uniform=lambda low, high: high,
+    )
+
+    assert decision.reason == "normal"
+    assert 0.8 <= decision.delay_seconds <= 1.3
 
 
 def test_market_activity_labels_are_human_readable() -> None:

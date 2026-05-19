@@ -28,6 +28,15 @@ class DelayDecision:
     range_max_seconds: float
 
 
+ACTIVE_STRATEGY_REASONS = frozenset(
+    {
+        "min_price_bounce_to_upper_competitor",
+        "all_competitors_below_min_price",
+        "competitor_above_min_but_step_hits_min",
+    }
+)
+ACTIVE_STRATEGY_CHANGE_SCORE_FLOOR = 0.65
+
 PROFILE_TIMINGS = {
     WORKER_GROUP_FAST_1: ProfileTiming(
         base_seconds=1.8,
@@ -102,6 +111,19 @@ def update_change_score(
 def update_error_score(previous_score: float, *, failed: bool) -> float:
     observed_error = 1.0 if failed else 0.0
     return _clamp(previous_score * 0.7 + observed_error * 0.3, 0.0, 1.0)
+
+
+def is_active_strategy_reason(reason: str | None) -> bool:
+    if reason is None:
+        return False
+    normalized_reason = reason.split(":", 1)[-1]
+    return normalized_reason in ACTIVE_STRATEGY_REASONS
+
+
+def apply_strategy_activity_floor(change_score: float, reason: str | None) -> float:
+    if not is_active_strategy_reason(reason):
+        return change_score
+    return max(change_score, ACTIVE_STRATEGY_CHANGE_SCORE_FLOOR)
 
 
 def choose_dynamic_delay(

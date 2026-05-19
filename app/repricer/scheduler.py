@@ -27,8 +27,10 @@ from app.repricer.engine import RepricerEngine
 from app.repricer.locks import RedisPositionLock
 from app.core.network import mask_proxy_url
 from app.repricer.adaptive_scheduler import (
+    apply_strategy_activity_floor,
     choose_dynamic_delay,
     display_interval_range,
+    is_active_strategy_reason,
     timing_for_group,
     timing_for_position,
     update_change_score,
@@ -367,6 +369,8 @@ class RepricerScheduler:
             state.last_competitor_price,
             result.competitor_price,
         )
+        strategy_activity_override = is_active_strategy_reason(result.reason)
+        change_score = apply_strategy_activity_floor(change_score, result.reason)
         error_score = update_error_score(state.error_score, failed=result.status == "failed")
         backoff_active = self._backoff_active() or error_kind == "429"
         decision = choose_dynamic_delay(
@@ -411,6 +415,8 @@ class RepricerScheduler:
             position_amount=position.robux_amount,
             change_score=round(change_score, 3),
             error_score=round(error_score, 3),
+            strategy_reason=result.reason,
+            activity_override="min_price_bounce" if strategy_activity_override else None,
         )
         if position.robux_amount == 500 and self.settings.worker_group == WORKER_GROUP_FAST_1 and backoff_active:
             self.logger.warning(
