@@ -1,6 +1,7 @@
 from collections import Counter
 from dataclasses import dataclass
 from decimal import Decimal
+from time import perf_counter
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -81,9 +82,17 @@ class RepricerEngine:
             return ProcessResult(position_amount, "failed", reason, None, None, None)
 
     async def _process_loaded_position(self, position: Position) -> ProcessResult:
+        cycle_started_at = perf_counter()
+        request_metrics_before = self.starvell_client.request_metrics_snapshot()
+        market_request_ms = 0.0
+        my_lot_request_ms = 0.0
+        strategy_ms = 0.0
+        price_update_ms = 0.0
+        my_lot_cache_hit = False
+
         if not position.lot_id:
             await self._record_missing_lot(position)
-            return ProcessResult(
+            result = ProcessResult(
                 position.robux_amount,
                 UpdateStatus.SKIPPED.value,
                 "missing_lot_id",
@@ -91,15 +100,40 @@ class RepricerEngine:
                 None,
                 position.state.last_seen_competitor_price if position.state else None,
             )
+            self._log_cycle_profile(
+                position=position,
+                result=result,
+                request_metrics_before=request_metrics_before,
+                cycle_started_at=cycle_started_at,
+                market_request_ms=market_request_ms,
+                my_lot_request_ms=my_lot_request_ms,
+                strategy_ms=strategy_ms,
+                price_update_ms=price_update_ms,
+                current_price=result.old_price,
+                target_price=result.new_price,
+                my_lot_cache_hit=my_lot_cache_hit,
+            )
+            return result
 
+        market_started_at = perf_counter()
         market_result = await self.starvell_client.get_market_offers_result(
             position.robux_amount,
             position.lot_id,
         )
+        market_request_ms = _elapsed_ms(market_started_at)
         offers = market_result.offers
+        my_lot_metrics_before = self.starvell_client.request_metrics_snapshot()
+        my_lot_started_at = perf_counter()
         own_lot = await self.starvell_client.get_my_lot(position.robux_amount, position.lot_id)
+        my_lot_request_ms = _elapsed_ms(my_lot_started_at)
+        my_lot_request_delta = _request_metrics_delta(
+            my_lot_metrics_before,
+            self.starvell_client.request_metrics_snapshot(),
+        )
+        my_lot_cache_hit = own_lot is not None and my_lot_request_delta.get("my_lot", 0) == 0
         current_price = self._current_price(position, own_lot)
 
+        strategy_started_at = perf_counter()
         filter_settings = CompetitorFilterSettings(
             min_rating=position.settings.min_rating,
             ignore_no_rating=position.settings.ignore_no_rating,
@@ -145,6 +179,7 @@ class RepricerEngine:
                 fallback_behavior=position.settings.fallback_behavior,
             ),
         )
+        strategy_ms = _elapsed_ms(strategy_started_at)
 
         if decision.target_price is None:
             await self._record_decision(
@@ -155,7 +190,7 @@ class RepricerEngine:
                 status=UpdateStatus.SKIPPED.value,
                 reason=decision.reason,
             )
-            return ProcessResult(
+            result = ProcessResult(
                 position.robux_amount,
                 UpdateStatus.SKIPPED.value,
                 decision.reason,
@@ -163,6 +198,20 @@ class RepricerEngine:
                 None,
                 decision.competitor_price,
             )
+            self._log_cycle_profile(
+                position=position,
+                result=result,
+                request_metrics_before=request_metrics_before,
+                cycle_started_at=cycle_started_at,
+                market_request_ms=market_request_ms,
+                my_lot_request_ms=my_lot_request_ms,
+                strategy_ms=strategy_ms,
+                price_update_ms=price_update_ms,
+                current_price=current_price,
+                target_price=None,
+                my_lot_cache_hit=my_lot_cache_hit,
+            )
+            return result
 
         if not decision.should_update:
             await self._record_decision(
@@ -173,7 +222,7 @@ class RepricerEngine:
                 status=UpdateStatus.SKIPPED.value,
                 reason=decision.reason,
             )
-            return ProcessResult(
+            result = ProcessResult(
                 position.robux_amount,
                 UpdateStatus.SKIPPED.value,
                 decision.reason,
@@ -181,6 +230,20 @@ class RepricerEngine:
                 decision.target_price,
                 decision.competitor_price,
             )
+            self._log_cycle_profile(
+                position=position,
+                result=result,
+                request_metrics_before=request_metrics_before,
+                cycle_started_at=cycle_started_at,
+                market_request_ms=market_request_ms,
+                my_lot_request_ms=my_lot_request_ms,
+                strategy_ms=strategy_ms,
+                price_update_ms=price_update_ms,
+                current_price=current_price,
+                target_price=decision.target_price,
+                my_lot_cache_hit=my_lot_cache_hit,
+            )
+            return result
 
         if self.dry_run:
             await self._record_decision(
@@ -199,7 +262,7 @@ class RepricerEngine:
                 new_price=str(decision.target_price),
                 competitor_price=str(decision.competitor_price),
             )
-            return ProcessResult(
+            result = ProcessResult(
                 position.robux_amount,
                 UpdateStatus.DRY_RUN.value,
                 decision.reason,
@@ -207,13 +270,29 @@ class RepricerEngine:
                 decision.target_price,
                 decision.competitor_price,
             )
+            self._log_cycle_profile(
+                position=position,
+                result=result,
+                request_metrics_before=request_metrics_before,
+                cycle_started_at=cycle_started_at,
+                market_request_ms=market_request_ms,
+                my_lot_request_ms=my_lot_request_ms,
+                strategy_ms=strategy_ms,
+                price_update_ms=price_update_ms,
+                current_price=current_price,
+                target_price=decision.target_price,
+                my_lot_cache_hit=my_lot_cache_hit,
+            )
+            return result
 
+        price_update_started_at = perf_counter()
         await self.starvell_client.update_my_lot_price(
             position.robux_amount,
             position.lot_id,
             decision.target_price,
             allow_real_write=not self.dry_run,
         )
+        price_update_ms = _elapsed_ms(price_update_started_at)
         await self._record_decision(
             position=position,
             decision=decision,
@@ -231,7 +310,7 @@ class RepricerEngine:
             new_price=str(decision.target_price),
             competitor_price=str(decision.competitor_price),
         )
-        return ProcessResult(
+        result = ProcessResult(
             position.robux_amount,
             UpdateStatus.SUCCESS.value,
             decision.reason,
@@ -239,6 +318,20 @@ class RepricerEngine:
             decision.target_price,
             decision.competitor_price,
         )
+        self._log_cycle_profile(
+            position=position,
+            result=result,
+            request_metrics_before=request_metrics_before,
+            cycle_started_at=cycle_started_at,
+            market_request_ms=market_request_ms,
+            my_lot_request_ms=my_lot_request_ms,
+            strategy_ms=strategy_ms,
+            price_update_ms=price_update_ms,
+            current_price=current_price,
+            target_price=decision.target_price,
+            my_lot_cache_hit=my_lot_cache_hit,
+        )
+        return result
 
     async def _record_decision(
         self,
@@ -328,3 +421,62 @@ class RepricerEngine:
         if position.state is not None:
             return position.state.current_own_price
         return None
+
+    def _log_cycle_profile(
+        self,
+        *,
+        position: Position,
+        result: ProcessResult,
+        request_metrics_before: dict[str, int],
+        cycle_started_at: float,
+        market_request_ms: float,
+        my_lot_request_ms: float,
+        strategy_ms: float,
+        price_update_ms: float,
+        current_price: Decimal | None,
+        target_price: Decimal | None,
+        my_lot_cache_hit: bool,
+    ) -> None:
+        request_metrics_delta = _request_metrics_delta(
+            request_metrics_before,
+            self.starvell_client.request_metrics_snapshot(),
+        )
+        self.logger.info(
+            "repricer_cycle_profile",
+            proxy_profile=self.settings.worker_group,
+            position=result.position_amount,
+            lot_id=position.lot_id,
+            cycle_total_ms=_elapsed_ms(cycle_started_at),
+            requests_count=request_metrics_delta.get("total", 0),
+            requests_by_type={
+                key: value
+                for key, value in sorted(request_metrics_delta.items())
+                if key != "total"
+            },
+            market_request_ms=round(market_request_ms, 2),
+            my_lot_request_ms=round(my_lot_request_ms, 2),
+            strategy_ms=round(strategy_ms, 2),
+            price_update_ms=round(price_update_ms, 2),
+            status=result.status,
+            skipped_reason=result.reason if result.status == UpdateStatus.SKIPPED.value else None,
+            reason=result.reason,
+            current_price=str(current_price) if current_price is not None else None,
+            new_price=str(target_price) if target_price is not None else None,
+            competitor_price=(
+                str(result.competitor_price) if result.competitor_price is not None else None
+            ),
+            my_lot_cache_hit=my_lot_cache_hit,
+        )
+
+
+def _elapsed_ms(started_at: float) -> float:
+    return round((perf_counter() - started_at) * 1000, 2)
+
+
+def _request_metrics_delta(before: dict[str, int], after: dict[str, int]) -> dict[str, int]:
+    keys = set(before) | set(after)
+    return {
+        key: value
+        for key in sorted(keys)
+        if (value := after.get(key, 0) - before.get(key, 0)) > 0
+    }

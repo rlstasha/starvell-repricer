@@ -50,6 +50,8 @@ class Settings(BaseSettings):
     market_update_price_payload_style: str = "partial_update"
     market_update_price_content_type: str = "json"
     price_write_discovery: bool = False
+    my_lot_state_cache_ttl_seconds: float = Field(default=10.0, ge=0)
+    price_update_context_cache_ttl_seconds: float = Field(default=2.0, ge=0)
 
     own_seller_id: str | None = None
     own_seller_username: str | None = None

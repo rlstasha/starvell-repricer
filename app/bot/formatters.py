@@ -1491,7 +1491,15 @@ def _seconds_value(value: float | Decimal | None) -> str:
 def _seconds_range(min_seconds: float | None, max_seconds: float | None) -> str:
     if min_seconds is None or max_seconds is None:
         return "динамическая"
-    return f"{float(min_seconds):.1f}–{float(max_seconds):.1f} сек"
+    return f"{_compact_seconds(float(min_seconds))}–{_compact_seconds(float(max_seconds))} сек"
+
+
+def _compact_seconds(value: float) -> str:
+    precision = 2 if value < 1 else 1
+    rendered = f"{value:.{precision}f}"
+    if value < 1:
+        return rendered.rstrip("0").rstrip(".")
+    return rendered
 
 
 def _profile_usage(heartbeat: WorkerHeartbeat | None) -> int:

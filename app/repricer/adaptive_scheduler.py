@@ -39,20 +39,20 @@ ACTIVE_STRATEGY_CHANGE_SCORE_FLOOR = 0.65
 
 PROFILE_TIMINGS = {
     WORKER_GROUP_FAST_1: ProfileTiming(
-        base_seconds=1.8,
-        min_seconds=1.5,
-        max_seconds=2.7,
-        normal_min_seconds=1.5,
-        normal_max_seconds=2.2,
+        base_seconds=1.5,
+        min_seconds=1.3,
+        max_seconds=2.1,
+        normal_min_seconds=1.3,
+        normal_max_seconds=2.1,
         backoff_min_seconds=2.5,
         backoff_max_seconds=4.0,
     ),
     WORKER_GROUP_FAST_2: ProfileTiming(
-        base_seconds=2.4,
-        min_seconds=2.0,
-        max_seconds=3.0,
-        normal_min_seconds=2.0,
-        normal_max_seconds=3.0,
+        base_seconds=2.1,
+        min_seconds=1.8,
+        max_seconds=2.6,
+        normal_min_seconds=1.8,
+        normal_max_seconds=2.6,
         backoff_min_seconds=3.0,
         backoff_max_seconds=5.0,
     ),
@@ -68,11 +68,11 @@ PROFILE_TIMINGS = {
 }
 ULTRA_FAST_POSITION_AMOUNT = 500
 ULTRA_FAST_TIMING = ProfileTiming(
-    base_seconds=1.0,
-    min_seconds=0.8,
-    max_seconds=1.3,
-    normal_min_seconds=0.8,
-    normal_max_seconds=1.3,
+    base_seconds=0.7,
+    min_seconds=0.45,
+    max_seconds=0.9,
+    normal_min_seconds=0.45,
+    normal_max_seconds=0.9,
     backoff_min_seconds=2.0,
     backoff_max_seconds=4.0,
 )

@@ -132,10 +132,10 @@ def test_worker_servers_show_new_fast_split_and_frequency() -> None:
     assert "📊 Прокси и лимиты" in text
     assert "🚀 Fast 1" in text
     assert "500 · 800 · 1000" in text
-    assert "Частота: 1.5–2.2 сек" in text
+    assert "Частота: 1.3–2.1 сек" in text
     assert "🚀 Fast 2" in text
     assert "400 · 1200 · 1700 · 2000" in text
-    assert "Частота: 2.0–3.0 сек" in text
+    assert "Частота: 1.8–2.6 сек" in text
     assert "🐢 Slow" in text
     assert "Частота: 4.5–6.5 сек" in text
     assert "203.0.113.10" in text
@@ -190,7 +190,7 @@ def test_position_card_uses_proxy_group_frequency_and_ip() -> None:
 
     assert "🌐 Прокси-группа: Fast 1" in text
     assert "🌍 IP: 45.132.20.115" in text
-    assert "⏱ Частота: 0.8–1.3 сек" in text
+    assert "⏱ Частота: 0.45–0.9 сек" in text
     assert "High-позиция" not in text
     assert "Normal" not in text
 
@@ -466,9 +466,9 @@ def test_scheduler_screen_is_separate_from_limits() -> None:
 
     assert "🧠 Планировщик" in text
     assert "🚀 Fast1" in text
-    assert "Интервал:\n1.5–2.7 сек" in text
+    assert "Интервал:\n1.3–2.1 сек" in text
     assert "⚡ 500 робуксов:" in text
-    assert "0.8–1.3 сек через Fast 1" in text
+    assert "0.45–0.9 сек через Fast 1" in text
     assert "Текущий:\n2.3 сек" in text
     assert "Нагрузка" not in text
 
@@ -626,7 +626,7 @@ def test_position_card_shows_market_activity_from_schedule_state() -> None:
     )
 
     assert "🧠 Активность рынка: высокая" in text
-    assert "⏱ Частота: 0.8–1.3 сек" in text
+    assert "⏱ Частота: 0.45–0.9 сек" in text
     assert "• Текущая: 1.9 сек" in text
 
 

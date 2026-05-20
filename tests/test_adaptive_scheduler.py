@@ -44,8 +44,8 @@ def test_dynamic_delay_avoids_identical_repeats() -> None:
 
 
 def test_display_ranges_match_proxy_profiles() -> None:
-    assert display_interval_range("fast_1") == (1.5, 2.2)
-    assert display_interval_range("fast_2") == (2.0, 3.0)
+    assert display_interval_range("fast_1") == (1.3, 2.1)
+    assert display_interval_range("fast_2") == (1.8, 2.6)
     assert display_interval_range("slow") == (4.5, 6.5)
 
 
@@ -62,9 +62,9 @@ def test_fast_profiles_stay_capped_when_market_is_calm() -> None:
     )
 
     assert fast_1.reason == "market_calm"
-    assert fast_1.delay_seconds <= 2.7
+    assert fast_1.delay_seconds <= 2.1
     assert fast_2.reason == "market_calm"
-    assert fast_2.delay_seconds <= 3.0
+    assert fast_2.delay_seconds <= 2.6
 
 
 def test_500_position_uses_ultrafast_timing_inside_fast_1() -> None:
@@ -76,10 +76,10 @@ def test_500_position_uses_ultrafast_timing_inside_fast_1() -> None:
         random_uniform=lambda low, high: high,
     )
 
-    assert timing.min_seconds == 0.8
-    assert timing.max_seconds == 1.3
-    assert decision.delay_seconds <= 1.3
-    assert display_interval_range("fast_1", position_amount=500) == (0.8, 1.3)
+    assert timing.min_seconds == 0.45
+    assert timing.max_seconds == 0.9
+    assert decision.delay_seconds <= 0.9
+    assert display_interval_range("fast_1", position_amount=500) == (0.45, 0.9)
 
 
 def test_min_price_bounce_reason_keeps_scheduler_active() -> None:
@@ -133,7 +133,7 @@ def test_500_position_stays_ultrafast_with_min_price_bounce_activity() -> None:
     )
 
     assert decision.reason == "normal"
-    assert 0.8 <= decision.delay_seconds <= 1.3
+    assert 0.45 <= decision.delay_seconds <= 0.9
 
 
 def test_market_activity_labels_are_human_readable() -> None:

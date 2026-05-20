@@ -1,6 +1,7 @@
 import html as html_module
 import json
 import re
+import time
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
@@ -143,6 +144,9 @@ class StarvellClient:
         self.proxy_profile = proxy_profile
         self.proxy_url = proxy_url
         self.logger = get_logger(__name__)
+        self._own_lot_cache: dict[str, tuple[float, OwnLot]] = {}
+        self._price_update_context_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+        self._request_counts: dict[str, int] = {"total": 0}
 
     async def __aenter__(self) -> "StarvellClient":
         await self._ensure_http_client()
@@ -201,6 +205,7 @@ class StarvellClient:
         attempts = 2
         for attempt in range(1, attempts + 1):
             await self.rate_limiter.acquire()
+            self._record_request_attempt(request_type)
             try:
                 response = await self._http_client.request(method, url, **kwargs)
             except httpx.TimeoutException:
@@ -278,6 +283,13 @@ class StarvellClient:
             return response
 
         raise RuntimeError("Starvell request retry loop ended unexpectedly")
+
+    def request_metrics_snapshot(self) -> dict[str, int]:
+        return dict(self._request_counts)
+
+    def _record_request_attempt(self, request_type: str) -> None:
+        self._request_counts["total"] = self._request_counts.get("total", 0) + 1
+        self._request_counts[request_type] = self._request_counts.get(request_type, 0) + 1
 
     def _apply_transport_backoff(self, exc: Exception) -> None:
         if hasattr(self.rate_limiter, "apply_backoff"):
@@ -441,17 +453,22 @@ class StarvellClient:
         """Fetch own lot page by lot_id using safe GET and parse current price."""
         if not lot_id:
             return None
+        if cached_lot := self._cached_own_lot(lot_id):
+            return cached_lot
 
         response = await self._request(
             "GET",
             f"/offers/{lot_id}",
             request_type="my_lot",
         )
-        return parse_starvell_own_lot(
+        lot = parse_starvell_own_lot(
             response.text,
             position_amount=position_amount,
             lot_id=lot_id,
         )
+        if lot is not None:
+            self._remember_own_lot(lot)
+        return lot
 
     async def get_my_lots(self) -> list[MyLotSummary]:
         """Fetch own active lots through the configured safe GET endpoint."""
@@ -589,6 +606,15 @@ class StarvellClient:
             proxy=self.proxy_profile or "direct",
             status="success",
         )
+        cached_lot = self._cached_own_lot(str(lot_id))
+        self._remember_own_lot(
+            OwnLot(
+                position_amount=position_amount,
+                price=new_price,
+                lot_id=str(lot_id),
+                raw_payload=cached_lot.raw_payload if cached_lot else None,
+            )
+        )
         return UpdateResult(success=True, raw_payload=raw_payload)
 
     async def debug_my_lot_price_update(
@@ -677,6 +703,10 @@ class StarvellClient:
         lot_id: str,
     ) -> dict[str, Any]:
         """Pull non-secret offer fields from safe GET pages for diagnostic write payloads."""
+        if cached_context := self._cached_price_update_context(lot_id):
+            self._complete_price_update_context_defaults(cached_context, lot_id, position_amount)
+            return cached_context
+
         context: dict[str, Any] = {}
         for path in (f"/offers/{lot_id}", f"/offers/edit/{lot_id}"):
             try:
@@ -693,6 +723,16 @@ class StarvellClient:
             if offer_payload:
                 context.update(_price_update_context_from_offer_payload(offer_payload))
 
+        self._complete_price_update_context_defaults(context, lot_id, position_amount)
+        self._remember_price_update_context(lot_id, context)
+        return context
+
+    def _complete_price_update_context_defaults(
+        self,
+        context: dict[str, Any],
+        lot_id: str,
+        position_amount: int,
+    ) -> None:
         context.setdefault("id", str(lot_id))
         context.setdefault("offer_id", str(lot_id))
         context.setdefault("offerId", str(lot_id))
@@ -705,7 +745,46 @@ class StarvellClient:
         if self.settings.market_csrf_token:
             context.setdefault("csrf", self.settings.market_csrf_token)
             context.setdefault("_csrf", self.settings.market_csrf_token)
-        return context
+
+    def _cached_own_lot(self, lot_id: str) -> OwnLot | None:
+        ttl_seconds = self.settings.my_lot_state_cache_ttl_seconds
+        if ttl_seconds <= 0:
+            return None
+        cached = self._own_lot_cache.get(str(lot_id))
+        if cached is None:
+            return None
+        cached_at, lot = cached
+        if time.monotonic() - cached_at > ttl_seconds:
+            self._own_lot_cache.pop(str(lot_id), None)
+            return None
+        return lot
+
+    def _remember_own_lot(self, lot: OwnLot) -> None:
+        if self.settings.my_lot_state_cache_ttl_seconds <= 0 or not lot.lot_id:
+            return
+        self._own_lot_cache[str(lot.lot_id)] = (time.monotonic(), lot)
+        if lot.raw_payload:
+            context = _price_update_context_from_offer_payload(lot.raw_payload)
+            if context:
+                self._remember_price_update_context(str(lot.lot_id), context)
+
+    def _cached_price_update_context(self, lot_id: str) -> dict[str, Any] | None:
+        ttl_seconds = self.settings.price_update_context_cache_ttl_seconds
+        if ttl_seconds <= 0:
+            return None
+        cached = self._price_update_context_cache.get(str(lot_id))
+        if cached is None:
+            return None
+        cached_at, context = cached
+        if time.monotonic() - cached_at > ttl_seconds:
+            self._price_update_context_cache.pop(str(lot_id), None)
+            return None
+        return dict(context)
+
+    def _remember_price_update_context(self, lot_id: str, context: dict[str, Any]) -> None:
+        if self.settings.price_update_context_cache_ttl_seconds <= 0:
+            return
+        self._price_update_context_cache[str(lot_id)] = (time.monotonic(), dict(context))
 
     async def _send_price_update_request(
         self,
