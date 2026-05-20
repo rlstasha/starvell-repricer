@@ -639,10 +639,17 @@ class RepricerScheduler:
             window_seconds=1,
             key_prefix=f"repricer:burst:{self.settings.worker_group}",
         )
+        account_burst = RedisFixedWindowRateLimiter(
+            self.redis,
+            limit=self.settings.global_request_burst_limit,
+            window_seconds=1,
+            key_prefix="repricer:burst:account",
+        )
         return CompositeRateLimiter(
             profile_limiter=profile,
             global_limiter=global_limiter,
             burst_limiter=burst,
+            account_burst_limiter=account_burst,
             min_delay_ms=self.settings.request_min_delay_ms,
             max_delay_ms=self.settings.request_max_delay_ms,
             jitter_ms=self.settings.request_jitter_ms,

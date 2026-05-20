@@ -104,8 +104,9 @@ def test_request_pacing_defaults_are_fast_when_proxies_are_healthy() -> None:
 
     assert settings.request_min_delay_ms == 100
     assert settings.request_jitter_ms == 50
+    assert settings.global_request_burst_limit == 8
     assert settings.my_lot_state_cache_ttl_seconds == 10
-    assert settings.price_update_context_cache_ttl_seconds == 2
+    assert settings.price_update_context_cache_ttl_seconds == 60
 
 
 def test_price_write_settings_default_to_safe_analysis_mode() -> None:

@@ -566,6 +566,8 @@ class StarvellClient:
                 content_type=request_content_type,
             )
         except httpx.HTTPStatusError as exc:
+            if _should_forget_price_update_context(exc.response.status_code):
+                self._forget_lot_caches(str(lot_id))
             debug_extra = (
                 _debug_response_fields(exc.response, self.settings)
                 if self.settings.price_write_discovery
@@ -741,6 +743,7 @@ class StarvellClient:
             offer_payload = _extract_offer_payload_from_html(response.text, lot_id=lot_id)
             if offer_payload:
                 context.update(_price_update_context_from_offer_payload(offer_payload))
+                break
 
         self._complete_price_update_context_defaults(context, lot_id, position_amount)
         self._remember_price_update_context(lot_id, context)
@@ -776,6 +779,10 @@ class StarvellClient:
         if time.monotonic() - cached_at > ttl_seconds:
             self._own_lot_cache.pop(str(lot_id), None)
             return None
+        if lot.raw_payload:
+            context = _price_update_context_from_offer_payload(lot.raw_payload)
+            if context:
+                self._remember_price_update_context(str(lot_id), context)
         return lot
 
     def _remember_own_lot(self, lot: OwnLot) -> None:
@@ -804,6 +811,10 @@ class StarvellClient:
         if self.settings.price_update_context_cache_ttl_seconds <= 0:
             return
         self._price_update_context_cache[str(lot_id)] = (time.monotonic(), dict(context))
+
+    def _forget_lot_caches(self, lot_id: str) -> None:
+        self._own_lot_cache.pop(str(lot_id), None)
+        self._price_update_context_cache.pop(str(lot_id), None)
 
     async def _send_price_update_request(
         self,
@@ -1051,6 +1062,10 @@ def _price_update_payload(
 
 def _price_update_style_needs_context(style: str) -> bool:
     return style.strip().lower() == "partial_update"
+
+
+def _should_forget_price_update_context(status_code: int) -> bool:
+    return status_code in {400, 404, 409, 422}
 
 
 def _partial_update_payload(price: Decimal, *, context: dict[str, Any]) -> dict[str, Any]:

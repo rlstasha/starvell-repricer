@@ -471,6 +471,7 @@ class CompositeRateLimiter:
         profile_limiter: RateLimiter,
         global_limiter: RateLimiter,
         burst_limiter: RateLimiter | None = None,
+        account_burst_limiter: RateLimiter | None = None,
         min_delay_ms: int = 0,
         max_delay_ms: int = 5000,
         jitter_ms: int = 0,
@@ -480,6 +481,7 @@ class CompositeRateLimiter:
         self.profile_limiter = profile_limiter
         self.global_limiter = global_limiter
         self.burst_limiter = burst_limiter
+        self.account_burst_limiter = account_burst_limiter
         self.min_delay_ms = min_delay_ms
         self.max_delay_ms = max_delay_ms
         self.jitter_ms = jitter_ms
@@ -489,6 +491,8 @@ class CompositeRateLimiter:
         self._consecutive_errors = 0
 
     async def try_acquire(self, cost: int = 1) -> bool:
+        if self.account_burst_limiter and not await self.account_burst_limiter.try_acquire(cost):
+            return False
         if self.burst_limiter and not await self.burst_limiter.try_acquire(cost):
             return False
         if not await self.profile_limiter.try_acquire(cost):
@@ -496,6 +500,8 @@ class CompositeRateLimiter:
         return await self.global_limiter.try_acquire(cost)
 
     async def acquire(self, cost: int = 1) -> None:
+        if self.account_burst_limiter is not None:
+            await self.account_burst_limiter.acquire(cost)
         if self.burst_limiter is not None:
             await self.burst_limiter.acquire(cost)
         await self.profile_limiter.acquire(cost)

@@ -105,6 +105,20 @@ async def test_composite_limiter_uses_short_proxy_transport_backoff() -> None:
     assert slept == [0.5]
 
 
+@pytest.mark.asyncio
+async def test_composite_limiter_can_guard_global_bursts() -> None:
+    limiter = CompositeRateLimiter(
+        profile_limiter=InMemoryFixedWindowRateLimiter(limit=100),
+        global_limiter=InMemoryFixedWindowRateLimiter(limit=300),
+        burst_limiter=InMemoryFixedWindowRateLimiter(limit=5, window_seconds=1),
+        account_burst_limiter=InMemoryFixedWindowRateLimiter(limit=2, window_seconds=1),
+    )
+
+    assert await limiter.try_acquire() is True
+    assert await limiter.try_acquire() is True
+    assert await limiter.try_acquire() is False
+
+
 def test_retry_after_header_seconds_are_parsed() -> None:
     assert retry_after_delay_seconds({"Retry-After": "8"}, now=100.0) == 8.0
 

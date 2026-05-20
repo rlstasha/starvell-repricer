@@ -51,7 +51,7 @@ class Settings(BaseSettings):
     market_update_price_content_type: str = "json"
     price_write_discovery: bool = False
     my_lot_state_cache_ttl_seconds: float = Field(default=10.0, ge=0)
-    price_update_context_cache_ttl_seconds: float = Field(default=2.0, ge=0)
+    price_update_context_cache_ttl_seconds: float = Field(default=60.0, ge=0)
 
     own_seller_id: str | None = None
     own_seller_username: str | None = None
@@ -67,6 +67,7 @@ class Settings(BaseSettings):
     proxy_fast_2_request_limit_per_minute: int | None = Field(default=None, ge=1)
     proxy_slow_request_limit_per_minute: int | None = Field(default=None, ge=1)
     request_burst_limit: int = Field(default=5, ge=1)
+    global_request_burst_limit: int = Field(default=8, ge=1)
     request_min_delay_ms: int = Field(default=100, ge=0)
     request_max_delay_ms: int = Field(default=5000, ge=0)
     request_jitter_ms: int = Field(default=50, ge=0)
