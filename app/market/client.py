@@ -264,12 +264,31 @@ class StarvellClient:
                     continue
                 raise
 
+            rate_limit_event = None
             if hasattr(self.rate_limiter, "record_response"):
-                await self.rate_limiter.record_response(response.status_code, response.headers)
+                rate_limit_event = await self.rate_limiter.record_response(
+                    response.status_code,
+                    response.headers,
+                    request_type=request_type,
+                )
             elif response.status_code < 400 and hasattr(self.rate_limiter, "reset_backoff"):
                 self.rate_limiter.reset_backoff()
             elif response.status_code in {403, 429} and hasattr(self.rate_limiter, "apply_backoff"):
                 self.rate_limiter.apply_backoff(_error_kind_from_status(response.status_code))
+            if rate_limit_event is not None:
+                self.logger.warning(
+                    "rate_limit_backoff_applied",
+                    profile=self.proxy_profile or "direct",
+                    position=None,
+                    endpoint=url,
+                    request_type=request_type,
+                    old_effective_limit=rate_limit_event.old_effective_limit_per_minute,
+                    new_effective_limit=rate_limit_event.new_effective_limit_per_minute,
+                    reason=rate_limit_event.reason,
+                    recovery_eta=rate_limit_event.recovery_eta_seconds,
+                    retry_after=rate_limit_event.retry_after_seconds,
+                    consecutive_429s=rate_limit_event.consecutive_429s,
+                )
             self.logger.info(
                 "starvell_http_request",
                 method=method,

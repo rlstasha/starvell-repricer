@@ -83,6 +83,16 @@ class RateLimitSnapshot:
     retry_after_until: datetime | None
 
 
+@dataclass(frozen=True)
+class RateLimitBackoffEvent:
+    old_effective_limit_per_minute: int
+    new_effective_limit_per_minute: int
+    reason: str
+    recovery_eta_seconds: float
+    retry_after_seconds: float | None
+    consecutive_429s: int
+
+
 class RedisFixedWindowRateLimiter:
     """Simple shared fixed-window limiter for external Starvell requests."""
 
@@ -203,6 +213,7 @@ class RedisAdaptiveTokenBucketRateLimiter:
         decrease_step_per_minute: int = 30,
         ramp_step_per_minute: int = 10,
         ramp_idle_seconds: float = 600.0,
+        isolated_429_window_seconds: float = 120.0,
         key_prefix: str = "repricer:account-token-limit",
         sleeper=asyncio.sleep,
     ):
@@ -216,6 +227,7 @@ class RedisAdaptiveTokenBucketRateLimiter:
         self.decrease_step_per_minute = decrease_step_per_minute
         self.ramp_step_per_minute = ramp_step_per_minute
         self.ramp_idle_seconds = ramp_idle_seconds
+        self.isolated_429_window_seconds = isolated_429_window_seconds
         self.key_prefix = key_prefix
         self.sleeper = sleeper
         self._last_wait_seconds = 0.05
@@ -255,14 +267,21 @@ class RedisAdaptiveTokenBucketRateLimiter:
         self,
         status_code: int,
         headers: Mapping[str, str],
-    ) -> None:
+        *,
+        request_type: str | None = None,
+    ) -> RateLimitBackoffEvent | None:
         if status_code == 429:
-            await self.record_rate_limited(headers)
-            return
+            return await self.record_rate_limited(headers, request_type=request_type)
         if status_code < 400:
             await self._maybe_ramp_up(state=await self._state(), now=time.time())
+        return None
 
-    async def record_rate_limited(self, headers: Mapping[str, str]) -> None:
+    async def record_rate_limited(
+        self,
+        headers: Mapping[str, str],
+        *,
+        request_type: str | None = None,
+    ) -> RateLimitBackoffEvent:
         now = time.time()
         state = await self._state()
         effective_limit = _int_state(
@@ -270,10 +289,20 @@ class RedisAdaptiveTokenBucketRateLimiter:
             "effective_limit_per_minute",
             self.initial_effective_limit_per_minute,
         )
-        next_limit = max(
-            self.min_limit_per_minute,
-            effective_limit - self.decrease_step_per_minute,
+        last_429_epoch = _float_state(state, "last_429_at_epoch") or 0.0
+        previous_count = _int_state(state, "consecutive_429_count", 0)
+        consecutive_429s = (
+            previous_count + 1
+            if last_429_epoch and now - last_429_epoch <= self.isolated_429_window_seconds
+            else 1
         )
+        has_account_headers = _has_account_rate_limit_headers(headers)
+        decrease_step = self._decrease_step_for_429(
+            consecutive_429s=consecutive_429s,
+            has_account_headers=has_account_headers,
+            request_type=request_type,
+        )
+        next_limit = max(self.min_limit_per_minute, effective_limit - decrease_step)
         header_limit = _int_header(headers, "X-RateLimit-Limit")
         if header_limit:
             next_limit = max(self.min_limit_per_minute, min(next_limit, header_limit))
@@ -287,8 +316,55 @@ class RedisAdaptiveTokenBucketRateLimiter:
                 "last_429_at_epoch": now,
                 "last_ramp_at_epoch": now,
                 "retry_after_until_epoch": retry_after_until,
+                "consecutive_429_count": consecutive_429s,
             },
         )
+        return RateLimitBackoffEvent(
+            old_effective_limit_per_minute=effective_limit,
+            new_effective_limit_per_minute=next_limit,
+            reason=self._backoff_reason(
+                decrease_step=decrease_step,
+                has_account_headers=has_account_headers,
+                retry_after_seconds=retry_after_seconds,
+            ),
+            recovery_eta_seconds=self.ramp_idle_seconds if next_limit < effective_limit else 0.0,
+            retry_after_seconds=retry_after_seconds,
+            consecutive_429s=consecutive_429s,
+        )
+
+    def _decrease_step_for_429(
+        self,
+        *,
+        consecutive_429s: int,
+        has_account_headers: bool,
+        request_type: str | None,
+    ) -> int:
+        if not has_account_headers and consecutive_429s < 3:
+            return 0
+        if not has_account_headers:
+            return max(1, self.decrease_step_per_minute // 3)
+        if request_type == "price_update":
+            return max(1, self.decrease_step_per_minute // 3)
+        if consecutive_429s <= 1:
+            return max(1, self.decrease_step_per_minute // 3)
+        if consecutive_429s == 2:
+            return max(1, (self.decrease_step_per_minute * 2) // 3)
+        return self.decrease_step_per_minute
+
+    def _backoff_reason(
+        self,
+        *,
+        decrease_step: int,
+        has_account_headers: bool,
+        retry_after_seconds: float | None,
+    ) -> str:
+        if retry_after_seconds:
+            return "retry_after"
+        if decrease_step <= 0:
+            return "profile_or_endpoint_rate_limited"
+        if has_account_headers:
+            return "account_rate_limit_headers"
+        return "repeated_profile_rate_limited"
 
     async def snapshot(self) -> RateLimitSnapshot:
         state = await self._state()
@@ -325,6 +401,7 @@ class RedisAdaptiveTokenBucketRateLimiter:
                 "last_ramp_at_epoch": time.time(),
                 "last_429_at_epoch": 0.0,
                 "retry_after_until_epoch": 0.0,
+                "consecutive_429_count": 0,
             },
         )
         return await self._state()
@@ -353,6 +430,7 @@ class RedisAdaptiveTokenBucketRateLimiter:
                 "configured_limit_per_minute": self.configured_limit_per_minute,
                 "effective_limit_per_minute": next_limit,
                 "last_ramp_at_epoch": last_ramp_at + steps * self.ramp_idle_seconds,
+                "consecutive_429_count": 0,
             },
         )
         return next_limit
@@ -431,14 +509,24 @@ class CompositeRateLimiter:
         self,
         status_code: int,
         headers: Mapping[str, str],
-    ) -> None:
+        *,
+        request_type: str | None = None,
+    ) -> RateLimitBackoffEvent | None:
         if status_code < 400 and hasattr(self, "reset_backoff"):
             self.reset_backoff()
         elif status_code in {403, 429}:
             self.apply_backoff(str(status_code))
 
         if hasattr(self.global_limiter, "record_response"):
-            await self.global_limiter.record_response(status_code, headers)
+            try:
+                return await self.global_limiter.record_response(
+                    status_code,
+                    headers,
+                    request_type=request_type,
+                )
+            except TypeError:
+                await self.global_limiter.record_response(status_code, headers)
+        return None
 
     async def account_snapshot(self) -> RateLimitSnapshot | None:
         if hasattr(self.global_limiter, "snapshot"):
@@ -564,6 +652,18 @@ def _int_header(headers: Mapping[str, str], key: str) -> int | None:
         return int(float(value))
     except ValueError:
         return None
+
+
+def _has_account_rate_limit_headers(headers: Mapping[str, str]) -> bool:
+    return any(
+        _header_value(headers, key) is not None
+        for key in (
+            "Retry-After",
+            "X-RateLimit-Limit",
+            "X-RateLimit-Remaining",
+            "X-RateLimit-Reset",
+        )
+    )
 
 
 def _int_state(state: dict[str, str], key: str, default: int) -> int:

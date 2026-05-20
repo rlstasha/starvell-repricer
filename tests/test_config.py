@@ -94,6 +94,9 @@ def test_account_effective_limit_defaults_to_full_proxy_capacity() -> None:
     assert settings.token_limit_mode is True
     assert settings.account_effective_limit_per_minute == 300
     assert settings.account_min_limit_per_minute == 60
+    assert settings.account_limit_decrease_step_per_minute == 30
+    assert settings.account_limit_ramp_step_per_minute == 20
+    assert settings.account_limit_ramp_idle_seconds == 180
 
 
 def test_request_pacing_defaults_are_fast_when_proxies_are_healthy() -> None:

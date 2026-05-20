@@ -43,7 +43,7 @@ async def test_worker_scheduler_reduces_effective_limit_after_429() -> None:
     assert scheduler._backoff_active() is True
 
 
-def test_worker_scheduler_ramps_effective_limit_after_ten_minutes_without_429() -> None:
+def test_worker_scheduler_ramps_effective_limit_after_three_minutes_without_429() -> None:
     settings = Settings(_env_file=None, worker_group="fast_1")
     scheduler = RepricerScheduler(
         settings=settings,
@@ -58,3 +58,43 @@ def test_worker_scheduler_ramps_effective_limit_after_ten_minutes_without_429() 
     assert changed is True
     assert scheduler.effective_request_limit_per_minute == 90
     assert scheduler.rate_limiter.profile_limiter.limit == 90
+
+
+@pytest.mark.asyncio
+async def test_slow_429_does_not_reduce_fast_1_profile_limit() -> None:
+    fast_1 = RepricerScheduler(
+        settings=Settings(_env_file=None, worker_group="fast_1"),
+        session_factory=object(),
+        redis=object(),
+    )
+    slow = RepricerScheduler(
+        settings=Settings(_env_file=None, worker_group="slow"),
+        session_factory=object(),
+        redis=object(),
+    )
+
+    await slow._update_error_state("failed", "rate_limited", position_amount=200)
+
+    assert slow.effective_request_limit_per_minute == 90
+    assert fast_1.effective_request_limit_per_minute == 100
+    assert fast_1.rate_limiter.profile_limiter.limit == 100
+
+
+@pytest.mark.asyncio
+async def test_fast_2_429_does_not_reduce_fast_1_profile_limit() -> None:
+    fast_1 = RepricerScheduler(
+        settings=Settings(_env_file=None, worker_group="fast_1"),
+        session_factory=object(),
+        redis=object(),
+    )
+    fast_2 = RepricerScheduler(
+        settings=Settings(_env_file=None, worker_group="fast_2"),
+        session_factory=object(),
+        redis=object(),
+    )
+
+    await fast_2._update_error_state("failed", "rate_limited", position_amount=1200)
+
+    assert fast_2.effective_request_limit_per_minute == 90
+    assert fast_1.effective_request_limit_per_minute == 100
+    assert fast_1.rate_limiter.profile_limiter.limit == 100
