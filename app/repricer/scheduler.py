@@ -38,9 +38,8 @@ from app.repricer.adaptive_scheduler import (
 )
 from app.repricer.rate_limiter import (
     CompositeRateLimiter,
-    RedisFixedWindowRateLimiter,
     RedisAdaptiveTokenBucketRateLimiter,
-    RedisTokenBucketRateLimiter,
+    RedisSlidingWindowRateLimiter,
     adaptive_backoff_seconds,
     transport_backoff_seconds,
 )
@@ -611,10 +610,10 @@ class RepricerScheduler:
         ).position_amount
 
     def _build_rate_limiter(self) -> CompositeRateLimiter:
-        profile = RedisTokenBucketRateLimiter(
+        profile = RedisSlidingWindowRateLimiter(
             self.redis,
             limit=self.effective_request_limit_per_minute,
-            key_prefix=f"repricer:token-bucket:{self.settings.worker_group}",
+            key_prefix=f"repricer:sliding-window:{self.settings.worker_group}",
         )
         if self.settings.token_limit_mode:
             global_limiter = RedisAdaptiveTokenBucketRateLimiter(
@@ -622,28 +621,32 @@ class RepricerScheduler:
                 configured_limit_per_minute=self.settings.global_request_limit_per_minute,
                 initial_effective_limit_per_minute=self.settings.account_effective_limit_per_minute,
                 min_limit_per_minute=self.settings.account_min_limit_per_minute,
+                target_limit_per_minute=self.settings.account_target_limit_per_minute,
+                target_min_limit_per_minute=self.settings.account_target_min_limit_per_minute,
+                target_decrease_step_per_minute=self.settings.account_target_decrease_step_per_minute,
+                target_ramp_idle_seconds=self.settings.account_target_ramp_idle_seconds,
                 decrease_step_per_minute=self.settings.account_limit_decrease_step_per_minute,
                 ramp_step_per_minute=self.settings.account_limit_ramp_step_per_minute,
                 ramp_idle_seconds=self.settings.account_limit_ramp_idle_seconds,
                 key_prefix="repricer:account-token-limit",
             )
         else:
-            global_limiter = RedisTokenBucketRateLimiter(
+            global_limiter = RedisSlidingWindowRateLimiter(
                 self.redis,
                 limit=self.settings.global_request_limit_per_minute,
-                key_prefix="repricer:token-bucket:global",
+                key_prefix="repricer:sliding-window:global",
             )
-        burst = RedisFixedWindowRateLimiter(
+        burst = RedisSlidingWindowRateLimiter(
             self.redis,
             limit=self.settings.request_burst_limit,
             window_seconds=1,
-            key_prefix=f"repricer:burst:{self.settings.worker_group}",
+            key_prefix=f"repricer:sliding-window:burst:{self.settings.worker_group}",
         )
-        account_burst = RedisFixedWindowRateLimiter(
+        account_burst = RedisSlidingWindowRateLimiter(
             self.redis,
             limit=self.settings.global_request_burst_limit,
-            window_seconds=1,
-            key_prefix="repricer:burst:account",
+            window_seconds=self.settings.global_request_burst_window_seconds,
+            key_prefix="repricer:sliding-window:burst:account",
         )
         return CompositeRateLimiter(
             profile_limiter=profile,

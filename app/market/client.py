@@ -197,6 +197,7 @@ class StarvellClient:
         url: str,
         *,
         request_type: str,
+        position_amount: int | None = None,
         **kwargs,
     ) -> httpx.Response:
         await self._ensure_http_client()
@@ -204,7 +205,10 @@ class StarvellClient:
             raise RuntimeError("StarvellClient HTTP client is not initialized")
         attempts = 2
         for attempt in range(1, attempts + 1):
-            await self.rate_limiter.acquire()
+            await self._acquire_rate_limit_slot(
+                request_type=request_type,
+                position_amount=position_amount,
+            )
             self._record_request_attempt(request_type)
             try:
                 response = await self._http_client.request(method, url, **kwargs)
@@ -279,7 +283,7 @@ class StarvellClient:
                 self.logger.warning(
                     "rate_limit_backoff_applied",
                     profile=self.proxy_profile or "direct",
-                    position=None,
+                    position=position_amount,
                     endpoint=url,
                     request_type=request_type,
                     old_effective_limit=rate_limit_event.old_effective_limit_per_minute,
@@ -309,6 +313,51 @@ class StarvellClient:
     def _record_request_attempt(self, request_type: str) -> None:
         self._request_counts["total"] = self._request_counts.get("total", 0) + 1
         self._request_counts[request_type] = self._request_counts.get(request_type, 0) + 1
+
+    async def _acquire_rate_limit_slot(
+        self,
+        *,
+        request_type: str,
+        position_amount: int | None,
+    ) -> None:
+        if hasattr(self.rate_limiter, "acquire_for_request"):
+            await self.rate_limiter.acquire_for_request(
+                position_amount=position_amount,
+                request_type=request_type,
+                profile=self.proxy_profile,
+            )
+        else:
+            await self.rate_limiter.acquire()
+
+        waited_seconds = float(getattr(self.rate_limiter, "last_acquire_wait_seconds", 0.0) or 0.0)
+        limit_reason = str(getattr(self.rate_limiter, "last_limit_reason", "allowed") or "allowed")
+        if waited_seconds < 0.025 and limit_reason == "allowed":
+            return
+
+        account_usage: int | None = None
+        profile_usage: int | None = None
+        if hasattr(self.rate_limiter, "account_snapshot"):
+            try:
+                snapshot = await self.rate_limiter.account_snapshot()
+            except Exception:
+                snapshot = None
+            if snapshot is not None:
+                account_usage = snapshot.current_usage
+        try:
+            profile_usage = await self.rate_limiter.current_usage()
+        except Exception:
+            profile_usage = None
+
+        self.logger.info(
+            "repricer_limit_wait",
+            account_requests_last_60s=account_usage,
+            profile_requests_last_60s=profile_usage,
+            limit_wait_ms=round(waited_seconds * 1000),
+            limit_reason=limit_reason,
+            position=position_amount,
+            profile=self.proxy_profile or "direct",
+            request_type=request_type,
+        )
 
     def _apply_transport_backoff(self, exc: Exception) -> None:
         if hasattr(self.rate_limiter, "apply_backoff"):
@@ -397,6 +446,7 @@ class StarvellClient:
                 "POST",
                 self.settings.market_offers_api_url,
                 request_type="market_offers",
+                position_amount=position_amount,
                 json=_market_offers_api_payload(
                     position_amount=position_amount,
                     limit=self.settings.market_offers_limit,
@@ -433,6 +483,7 @@ class StarvellClient:
             "GET",
             self.settings.market_offers_url,
             request_type="market_offers",
+            position_amount=position_amount,
         )
         raw_items = _extract_market_offer_items_from_html(response.text)
         offers = parse_starvell_market_offers_payload(
@@ -479,6 +530,7 @@ class StarvellClient:
             "GET",
             f"/offers/{lot_id}",
             request_type="my_lot",
+            position_amount=position_amount,
         )
         lot = parse_starvell_own_lot(
             response.text,
@@ -564,6 +616,7 @@ class StarvellClient:
                 url=url,
                 payload=payload,
                 content_type=request_content_type,
+                position_amount=position_amount,
             )
         except httpx.HTTPStatusError as exc:
             if _should_forget_price_update_context(exc.response.status_code):
@@ -671,6 +724,7 @@ class StarvellClient:
                         url=url,
                         payload=candidate.payload,
                         content_type=request_content_type,
+                        position_amount=position_amount,
                     )
                 except httpx.HTTPStatusError as exc:
                     attempt = _price_update_attempt_result(
@@ -735,6 +789,7 @@ class StarvellClient:
                     "GET",
                     path,
                     request_type="price_update_context",
+                    position_amount=position_amount,
                 )
             except httpx.HTTPStatusError:
                 continue
@@ -823,6 +878,7 @@ class StarvellClient:
         url: str,
         payload: dict[str, Any],
         content_type: str,
+        position_amount: int | None = None,
     ) -> httpx.Response:
         normalized_content_type = content_type.strip().lower()
         if normalized_content_type == "form":
@@ -830,12 +886,14 @@ class StarvellClient:
                 method,
                 url,
                 request_type="price_update",
+                position_amount=position_amount,
                 data=_form_payload(payload),
             )
         return await self._request(
             method,
             url,
             request_type="price_update",
+            position_amount=position_amount,
             json=payload,
         )
 

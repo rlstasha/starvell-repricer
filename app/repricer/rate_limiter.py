@@ -46,6 +46,93 @@ redis.call("HMSET", bucket_key, "tokens", tokens, "updated_at", now)
 redis.call("EXPIRE", bucket_key, ttl)
 return {0, tokens, wait_seconds}
 """
+SLIDING_WINDOW_SCRIPT = """
+local window_key = KEYS[1]
+local seq_key = KEYS[2]
+local now = tonumber(ARGV[1])
+local window_seconds = tonumber(ARGV[2])
+local limit = tonumber(ARGV[3])
+local cost = tonumber(ARGV[4])
+local ttl = tonumber(ARGV[5])
+
+local cutoff = now - window_seconds
+redis.call("ZREMRANGEBYSCORE", window_key, "-inf", cutoff)
+
+local current = redis.call("ZCARD", window_key)
+if current + cost <= limit then
+  for i = 1, cost do
+    local seq = redis.call("INCR", seq_key)
+    redis.call("ZADD", window_key, now, tostring(now) .. ":" .. tostring(seq))
+  end
+  redis.call("EXPIRE", window_key, ttl)
+  redis.call("EXPIRE", seq_key, ttl)
+  return {1, current + cost, 0}
+end
+
+local oldest = redis.call("ZRANGE", window_key, 0, 0, "WITHSCORES")
+local wait_seconds = 0.05
+if oldest[2] ~= nil then
+  wait_seconds = math.max((tonumber(oldest[2]) + window_seconds) - now, 0.05)
+end
+
+redis.call("EXPIRE", window_key, ttl)
+redis.call("EXPIRE", seq_key, ttl)
+return {0, current, wait_seconds}
+"""
+MULTI_SLIDING_WINDOW_SCRIPT = """
+local seq_key = KEYS[1]
+local now = tonumber(ARGV[1])
+local cost = tonumber(ARGV[2])
+local ttl = tonumber(ARGV[3])
+local windows_count = tonumber(ARGV[4])
+
+local max_wait_seconds = 0
+local denied_index = 0
+local denied_current = 0
+
+for i = 1, windows_count do
+  local window_key = KEYS[i + 1]
+  local base = 5 + ((i - 1) * 2)
+  local limit = tonumber(ARGV[base])
+  local window_seconds = tonumber(ARGV[base + 1])
+  local cutoff = now - window_seconds
+
+  redis.call("ZREMRANGEBYSCORE", window_key, "-inf", cutoff)
+  local current = redis.call("ZCARD", window_key)
+  if current + cost > limit then
+    local oldest = redis.call("ZRANGE", window_key, 0, 0, "WITHSCORES")
+    local wait_seconds = 0.05
+    if oldest[2] ~= nil then
+      wait_seconds = math.max((tonumber(oldest[2]) + window_seconds) - now, 0.05)
+    end
+    if wait_seconds > max_wait_seconds then
+      max_wait_seconds = wait_seconds
+      denied_index = i
+      denied_current = current
+    end
+  end
+end
+
+if denied_index > 0 then
+  for i = 1, windows_count do
+    redis.call("EXPIRE", KEYS[i + 1], ttl)
+  end
+  redis.call("EXPIRE", seq_key, ttl)
+  return {0, denied_current, max_wait_seconds, denied_index}
+end
+
+for i = 1, windows_count do
+  local window_key = KEYS[i + 1]
+  for item = 1, cost do
+    local seq = redis.call("INCR", seq_key)
+    redis.call("ZADD", window_key, now, tostring(now) .. ":" .. tostring(i) .. ":" .. tostring(seq))
+  end
+  redis.call("EXPIRE", window_key, ttl)
+end
+redis.call("EXPIRE", seq_key, ttl)
+
+return {1, 0, 0, 0}
+"""
 
 
 def adaptive_backoff_seconds(consecutive_errors: int) -> float:
@@ -81,6 +168,7 @@ class RateLimitSnapshot:
     backoff_active: bool
     last_429_at: datetime | None
     retry_after_until: datetime | None
+    target_limit_per_minute: int | None = None
 
 
 @dataclass(frozen=True)
@@ -179,10 +267,7 @@ class RedisTokenBucketRateLimiter:
         )
         allowed = int(result[0]) == 1
         self._last_wait_seconds = max(float(result[2] or 0.05), 0.05)
-        if allowed:
-            await self._increment_usage(cost)
-            return True
-        return False
+        return allowed
 
     async def acquire(self, cost: int = 1) -> None:
         while not await self.try_acquire(cost):
@@ -200,6 +285,63 @@ class RedisTokenBucketRateLimiter:
         await pipe.execute()
 
 
+class RedisSlidingWindowRateLimiter:
+    """Redis-backed exact sliding-window limiter for shared request ceilings."""
+
+    def __init__(
+        self,
+        redis: Redis,
+        *,
+        limit: int = 100,
+        window_seconds: float = 60.0,
+        key_prefix: str = "repricer:sliding-window",
+        sleeper=asyncio.sleep,
+    ):
+        self.redis = redis
+        self.limit = limit
+        self.window_seconds = window_seconds
+        self.key_prefix = key_prefix
+        self.sleeper = sleeper
+        self._last_wait_seconds = 0.05
+
+    def _window_key(self) -> str:
+        return f"{self.key_prefix}:events"
+
+    def _seq_key(self) -> str:
+        return f"{self.key_prefix}:seq"
+
+    async def try_acquire(self, cost: int = 1) -> bool:
+        if cost < 1:
+            raise ValueError("cost must be >= 1")
+        allowed, _, wait_seconds = await self._run_script(max(int(self.limit), 1), cost)
+        self._last_wait_seconds = max(float(wait_seconds or 0.05), 0.05)
+        return bool(allowed)
+
+    async def acquire(self, cost: int = 1) -> None:
+        while not await self.try_acquire(cost):
+            await self.sleeper(self._last_wait_seconds)
+
+    async def current_usage(self) -> int:
+        now = time.time()
+        window_key = self._window_key()
+        await self.redis.zremrangebyscore(window_key, "-inf", now - self.window_seconds)
+        return int(await self.redis.zcard(window_key))
+
+    async def _run_script(self, limit: int, cost: int) -> tuple[int, int, float]:
+        result = await self.redis.eval(
+            SLIDING_WINDOW_SCRIPT,
+            2,
+            self._window_key(),
+            self._seq_key(),
+            time.time(),
+            self.window_seconds,
+            limit,
+            cost,
+            int(self.window_seconds * 2 + 10),
+        )
+        return int(result[0]), int(result[1]), float(result[2] or 0.0)
+
+
 class RedisAdaptiveTokenBucketRateLimiter:
     """Shared account/session limiter that learns a safe effective request limit."""
 
@@ -210,6 +352,10 @@ class RedisAdaptiveTokenBucketRateLimiter:
         configured_limit_per_minute: int,
         initial_effective_limit_per_minute: int,
         min_limit_per_minute: int = 60,
+        target_limit_per_minute: int | None = None,
+        target_min_limit_per_minute: int = 260,
+        target_decrease_step_per_minute: int = 10,
+        target_ramp_idle_seconds: float = 300.0,
         decrease_step_per_minute: int = 30,
         ramp_step_per_minute: int = 10,
         ramp_idle_seconds: float = 600.0,
@@ -224,6 +370,16 @@ class RedisAdaptiveTokenBucketRateLimiter:
             configured_limit_per_minute,
         )
         self.min_limit_per_minute = min_limit_per_minute
+        self.initial_target_limit_per_minute = min(
+            target_limit_per_minute or configured_limit_per_minute,
+            configured_limit_per_minute,
+        )
+        self.target_min_limit_per_minute = min(
+            max(target_min_limit_per_minute, min_limit_per_minute),
+            self.initial_target_limit_per_minute,
+        )
+        self.target_decrease_step_per_minute = target_decrease_step_per_minute
+        self.target_ramp_idle_seconds = target_ramp_idle_seconds
         self.decrease_step_per_minute = decrease_step_per_minute
         self.ramp_step_per_minute = ramp_step_per_minute
         self.ramp_idle_seconds = ramp_idle_seconds
@@ -237,6 +393,12 @@ class RedisAdaptiveTokenBucketRateLimiter:
 
     def _bucket_key(self) -> str:
         return f"{self.key_prefix}:bucket"
+
+    def _window_key(self) -> str:
+        return f"{self.key_prefix}:events"
+
+    def _seq_key(self) -> str:
+        return f"{self.key_prefix}:seq"
 
     def _usage_key(self) -> str:
         window = int(time.time() // 60)
@@ -252,16 +414,48 @@ class RedisAdaptiveTokenBucketRateLimiter:
             self._last_wait_seconds = max(retry_after_until - now, 0.05)
             return False
 
-        effective_limit = await self._maybe_ramp_up(state=state, now=now)
-        return await self._try_bucket_acquire(effective_limit, cost)
+        state = await self._maybe_ramp_up(state=state, now=now)
+        effective_limit = _int_state(
+            state,
+            "effective_limit_per_minute",
+            self.initial_effective_limit_per_minute,
+        )
+        target_limit = _int_state(
+            state,
+            "target_limit_per_minute",
+            self.initial_target_limit_per_minute,
+        )
+        return await self._try_sliding_window_acquire(min(effective_limit, target_limit), cost)
+
+    async def active_limit_state(self) -> tuple[int, float | None]:
+        """Return the active sliding-window limit and optional retry wait."""
+        state = await self._state()
+        now = time.time()
+        retry_after_until = _float_state(state, "retry_after_until_epoch")
+        if retry_after_until and retry_after_until > now:
+            return 0, max(retry_after_until - now, 0.05)
+
+        state = await self._maybe_ramp_up(state=state, now=now)
+        effective_limit = _int_state(
+            state,
+            "effective_limit_per_minute",
+            self.initial_effective_limit_per_minute,
+        )
+        target_limit = _int_state(
+            state,
+            "target_limit_per_minute",
+            self.initial_target_limit_per_minute,
+        )
+        return max(min(effective_limit, target_limit), 1), None
 
     async def acquire(self, cost: int = 1) -> None:
         while not await self.try_acquire(cost):
             await self.sleeper(self._last_wait_seconds)
 
     async def current_usage(self) -> int:
-        value = await self.redis.get(self._usage_key())
-        return int(value or 0)
+        now = time.time()
+        await self.redis.zremrangebyscore(self._window_key(), "-inf", now - 60.0)
+        return int(await self.redis.zcard(self._window_key()))
 
     async def record_response(
         self,
@@ -289,6 +483,11 @@ class RedisAdaptiveTokenBucketRateLimiter:
             "effective_limit_per_minute",
             self.initial_effective_limit_per_minute,
         )
+        target_limit = _int_state(
+            state,
+            "target_limit_per_minute",
+            self.initial_target_limit_per_minute,
+        )
         last_429_epoch = _float_state(state, "last_429_at_epoch") or 0.0
         previous_count = _int_state(state, "consecutive_429_count", 0)
         consecutive_429s = (
@@ -302,10 +501,19 @@ class RedisAdaptiveTokenBucketRateLimiter:
             has_account_headers=has_account_headers,
             request_type=request_type,
         )
-        next_limit = max(self.min_limit_per_minute, effective_limit - decrease_step)
+        next_target_limit = max(
+            self.target_min_limit_per_minute,
+            target_limit - self.target_decrease_step_per_minute,
+        )
+        effective_decrease_step = decrease_step if consecutive_429s >= 3 else 0
+        next_limit = max(self.min_limit_per_minute, effective_limit - effective_decrease_step)
         header_limit = _int_header(headers, "X-RateLimit-Limit")
         if header_limit:
             next_limit = max(self.min_limit_per_minute, min(next_limit, header_limit))
+            next_target_limit = max(
+                self.target_min_limit_per_minute,
+                min(next_target_limit, header_limit),
+            )
         retry_after_seconds = retry_after_delay_seconds(headers, now=now)
         retry_after_until = now + retry_after_seconds if retry_after_seconds else 0.0
         await self.redis.hset(
@@ -313,8 +521,10 @@ class RedisAdaptiveTokenBucketRateLimiter:
             mapping={
                 "configured_limit_per_minute": self.configured_limit_per_minute,
                 "effective_limit_per_minute": next_limit,
+                "target_limit_per_minute": next_target_limit,
                 "last_429_at_epoch": now,
                 "last_ramp_at_epoch": now,
+                "last_target_ramp_at_epoch": now,
                 "retry_after_until_epoch": retry_after_until,
                 "consecutive_429_count": consecutive_429s,
             },
@@ -374,6 +584,11 @@ class RedisAdaptiveTokenBucketRateLimiter:
             "effective_limit_per_minute",
             self.initial_effective_limit_per_minute,
         )
+        target_limit = _int_state(
+            state,
+            "target_limit_per_minute",
+            self.initial_target_limit_per_minute,
+        )
         retry_after_until_epoch = _float_state(state, "retry_after_until_epoch")
         last_429_epoch = _float_state(state, "last_429_at_epoch")
         backoff_active = bool(
@@ -387,18 +602,41 @@ class RedisAdaptiveTokenBucketRateLimiter:
             backoff_active=backoff_active,
             last_429_at=_datetime_from_epoch(last_429_epoch),
             retry_after_until=_datetime_from_epoch(retry_after_until_epoch),
+            target_limit_per_minute=target_limit,
         )
 
     async def _state(self) -> dict[str, str]:
         state = await self.redis.hgetall(self._state_key())
         if state:
+            mapping: dict[str, object] = {}
+            if "configured_limit_per_minute" not in state:
+                mapping["configured_limit_per_minute"] = self.configured_limit_per_minute
+            if "effective_limit_per_minute" not in state:
+                mapping["effective_limit_per_minute"] = self.initial_effective_limit_per_minute
+            if "target_limit_per_minute" not in state:
+                mapping["target_limit_per_minute"] = self.initial_target_limit_per_minute
+            if "last_target_ramp_at_epoch" not in state:
+                mapping["last_target_ramp_at_epoch"] = time.time()
+            if "last_ramp_at_epoch" not in state:
+                mapping["last_ramp_at_epoch"] = time.time()
+            if "last_429_at_epoch" not in state:
+                mapping["last_429_at_epoch"] = 0.0
+            if "retry_after_until_epoch" not in state:
+                mapping["retry_after_until_epoch"] = 0.0
+            if "consecutive_429_count" not in state:
+                mapping["consecutive_429_count"] = 0
+            if mapping:
+                await self.redis.hset(self._state_key(), mapping=mapping)
+                return await self._state()
             return dict(state)
         await self.redis.hset(
             self._state_key(),
             mapping={
                 "configured_limit_per_minute": self.configured_limit_per_minute,
                 "effective_limit_per_minute": self.initial_effective_limit_per_minute,
+                "target_limit_per_minute": self.initial_target_limit_per_minute,
                 "last_ramp_at_epoch": time.time(),
+                "last_target_ramp_at_epoch": time.time(),
                 "last_429_at_epoch": 0.0,
                 "retry_after_until_epoch": 0.0,
                 "consecutive_429_count": 0,
@@ -406,53 +644,60 @@ class RedisAdaptiveTokenBucketRateLimiter:
         )
         return await self._state()
 
-    async def _maybe_ramp_up(self, *, state: dict[str, str], now: float) -> int:
+    async def _maybe_ramp_up(self, *, state: dict[str, str], now: float) -> dict[str, str]:
         effective_limit = _int_state(
             state,
             "effective_limit_per_minute",
             self.initial_effective_limit_per_minute,
         )
-        if effective_limit >= self.configured_limit_per_minute:
-            return self.configured_limit_per_minute
+        target_limit = _int_state(
+            state,
+            "target_limit_per_minute",
+            self.initial_target_limit_per_minute,
+        )
+        mapping: dict[str, object] = {"configured_limit_per_minute": self.configured_limit_per_minute}
 
         last_ramp_at = _float_state(state, "last_ramp_at_epoch") or now
-        if now - last_ramp_at < self.ramp_idle_seconds:
-            return effective_limit
+        if effective_limit < self.configured_limit_per_minute and now - last_ramp_at >= self.ramp_idle_seconds:
+            steps = int((now - last_ramp_at) // self.ramp_idle_seconds)
+            effective_limit = min(
+                self.configured_limit_per_minute,
+                effective_limit + steps * self.ramp_step_per_minute,
+            )
+            mapping["effective_limit_per_minute"] = effective_limit
+            mapping["last_ramp_at_epoch"] = last_ramp_at + steps * self.ramp_idle_seconds
+            mapping["consecutive_429_count"] = 0
 
-        steps = int((now - last_ramp_at) // self.ramp_idle_seconds)
-        next_limit = min(
-            self.configured_limit_per_minute,
-            effective_limit + steps * self.ramp_step_per_minute,
-        )
-        await self.redis.hset(
-            self._state_key(),
-            mapping={
-                "configured_limit_per_minute": self.configured_limit_per_minute,
-                "effective_limit_per_minute": next_limit,
-                "last_ramp_at_epoch": last_ramp_at + steps * self.ramp_idle_seconds,
-                "consecutive_429_count": 0,
-            },
-        )
-        return next_limit
+        last_target_ramp_at = _float_state(state, "last_target_ramp_at_epoch") or now
+        if target_limit < self.initial_target_limit_per_minute and now - last_target_ramp_at >= self.target_ramp_idle_seconds:
+            steps = int((now - last_target_ramp_at) // self.target_ramp_idle_seconds)
+            target_limit = min(
+                self.initial_target_limit_per_minute,
+                target_limit + steps * self.target_decrease_step_per_minute,
+            )
+            mapping["target_limit_per_minute"] = target_limit
+            mapping["last_target_ramp_at_epoch"] = last_target_ramp_at + steps * self.target_ramp_idle_seconds
 
-    async def _try_bucket_acquire(self, limit: int, cost: int) -> bool:
-        rate_per_second = max(limit, 1) / 60
+        if len(mapping) > 1:
+            await self.redis.hset(self._state_key(), mapping=mapping)
+            return await self._state()
+        return state
+
+    async def _try_sliding_window_acquire(self, limit: int, cost: int) -> bool:
         result = await self.redis.eval(
-            TOKEN_BUCKET_SCRIPT,
-            1,
-            self._bucket_key(),
+            SLIDING_WINDOW_SCRIPT,
+            2,
+            self._window_key(),
+            self._seq_key(),
             time.time(),
-            rate_per_second,
+            60.0,
             max(limit, 1),
             cost,
-            120,
+            130,
         )
         allowed = int(result[0]) == 1
         self._last_wait_seconds = max(float(result[2] or 0.05), 0.05)
-        if allowed:
-            await self._increment_usage(cost)
-            return True
-        return False
+        return allowed
 
     async def _increment_usage(self, cost: int) -> None:
         key = self._usage_key()
@@ -489,24 +734,102 @@ class CompositeRateLimiter:
         self.sleeper = sleeper
         self._extra_delay_ms = 0.0
         self._consecutive_errors = 0
+        self._last_wait_seconds = 0.0
+        self._last_acquire_wait_seconds = 0.0
+        self._last_limit_reason = "allowed"
+
+    @property
+    def last_wait_seconds(self) -> float:
+        return self._last_wait_seconds
+
+    @property
+    def last_acquire_wait_seconds(self) -> float:
+        return self._last_acquire_wait_seconds
+
+    @property
+    def last_limit_reason(self) -> str:
+        return self._last_limit_reason
 
     async def try_acquire(self, cost: int = 1) -> bool:
+        result = await self._try_acquire_multi_sliding(cost=cost)
+        if result is not None:
+            allowed, wait_seconds, reason = result
+            self._last_wait_seconds = wait_seconds
+            self._last_limit_reason = reason
+            return allowed
+
         if self.account_burst_limiter and not await self.account_burst_limiter.try_acquire(cost):
+            self._last_limit_reason = "account_burst"
             return False
         if self.burst_limiter and not await self.burst_limiter.try_acquire(cost):
+            self._last_limit_reason = "profile_burst"
             return False
         if not await self.profile_limiter.try_acquire(cost):
+            self._last_limit_reason = "profile_window"
             return False
-        return await self.global_limiter.try_acquire(cost)
+        allowed = await self.global_limiter.try_acquire(cost)
+        self._last_limit_reason = "allowed" if allowed else "account_window"
+        return allowed
 
     async def acquire(self, cost: int = 1) -> None:
-        if self.account_burst_limiter is not None:
-            await self.account_burst_limiter.acquire(cost)
-        if self.burst_limiter is not None:
-            await self.burst_limiter.acquire(cost)
-        await self.profile_limiter.acquire(cost)
-        await self.global_limiter.acquire(cost)
+        waited_seconds = 0.0
+        wait_reason = "allowed"
+        while not await self.try_acquire(cost):
+            wait_seconds = max(self._last_wait_seconds, 0.05)
+            waited_seconds += wait_seconds
+            wait_reason = self._last_limit_reason
+            await self.sleeper(wait_seconds)
+        self._last_acquire_wait_seconds = waited_seconds
+        if waited_seconds > 0:
+            self._last_limit_reason = wait_reason
         await self._sleep_after_request()
+
+    async def acquire_for_request(
+        self,
+        *,
+        cost: int = 1,
+        position_amount: int | None = None,
+        request_type: str | None = None,
+        profile: str | None = None,
+    ) -> None:
+        waited_seconds = 0.0
+        wait_reason = "allowed"
+        while not await self.try_acquire_for_request(
+            cost=cost,
+            position_amount=position_amount,
+            request_type=request_type,
+            profile=profile,
+        ):
+            wait_seconds = max(self._last_wait_seconds, 0.05)
+            waited_seconds += wait_seconds
+            wait_reason = self._last_limit_reason
+            await self.sleeper(wait_seconds)
+        self._last_acquire_wait_seconds = waited_seconds
+        if waited_seconds > 0:
+            self._last_limit_reason = wait_reason
+        await self._sleep_after_request()
+
+    async def try_acquire_for_request(
+        self,
+        *,
+        cost: int = 1,
+        position_amount: int | None = None,
+        request_type: str | None = None,
+        profile: str | None = None,
+    ) -> bool:
+        result = await self._try_acquire_multi_sliding(
+            cost=cost,
+            position_amount=position_amount,
+            request_type=request_type,
+            profile=profile,
+        )
+        if result is None:
+            return await self.try_acquire(cost)
+
+        allowed, wait_seconds, reason = result
+        self._last_wait_seconds = wait_seconds
+        self._last_limit_reason = reason
+        return allowed
 
     async def current_usage(self) -> int:
         return await self.profile_limiter.current_usage()
@@ -538,6 +861,177 @@ class CompositeRateLimiter:
         if hasattr(self.global_limiter, "snapshot"):
             return await self.global_limiter.snapshot()
         return None
+
+    async def _try_acquire_multi_sliding(
+        self,
+        *,
+        cost: int = 1,
+        position_amount: int | None = None,
+        request_type: str | None = None,
+        profile: str | None = None,
+    ) -> tuple[bool, float, str] | None:
+        specs = await self._multi_sliding_specs(
+            position_amount=position_amount,
+            request_type=request_type,
+            profile=profile,
+        )
+        if specs is None:
+            return None
+
+        redis, seq_key, windows = specs
+        if not windows:
+            return None
+        ttl = int(max(window["window_seconds"] for window in windows) * 2 + 10)
+        keys = [seq_key, *[str(window["key"]) for window in windows]]
+        args: list[object] = [time.time(), cost, ttl, len(windows)]
+        for window in windows:
+            args.extend([int(window["limit"]), float(window["window_seconds"])])
+
+        result = await redis.eval(MULTI_SLIDING_WINDOW_SCRIPT, len(keys), *keys, *args)
+        allowed = int(result[0]) == 1
+        wait_seconds = max(float(result[2] or 0.0), 0.0)
+        denied_index = int(result[3] or 0)
+        reason = "allowed"
+        if not allowed and denied_index > 0:
+            denied_window = windows[denied_index - 1]
+            reason = str(denied_window["reason"])
+            wait_seconds = max(wait_seconds, float(denied_window.get("retry_wait_seconds", 0.0)))
+        return allowed, wait_seconds, reason
+
+    async def _multi_sliding_specs(
+        self,
+        *,
+        position_amount: int | None,
+        request_type: str | None,
+        profile: str | None,
+    ) -> tuple[Redis, str, list[dict[str, object]]] | None:
+        if not isinstance(self.profile_limiter, RedisSlidingWindowRateLimiter):
+            return None
+        redis = self.profile_limiter.redis
+        seq_key = f"{self.profile_limiter.key_prefix}:composite-seq"
+        windows: list[dict[str, object]] = []
+
+        if self.account_burst_limiter is not None:
+            if not isinstance(self.account_burst_limiter, RedisSlidingWindowRateLimiter):
+                return None
+            if self.account_burst_limiter.redis is not redis:
+                return None
+            windows.append(
+                {
+                    "key": self.account_burst_limiter._window_key(),
+                    "limit": max(int(self.account_burst_limiter.limit), 1),
+                    "window_seconds": float(self.account_burst_limiter.window_seconds),
+                    "reason": "account_burst",
+                }
+            )
+
+        if self.burst_limiter is not None:
+            if not isinstance(self.burst_limiter, RedisSlidingWindowRateLimiter):
+                return None
+            if self.burst_limiter.redis is not redis:
+                return None
+            windows.append(
+                {
+                    "key": self.burst_limiter._window_key(),
+                    "limit": max(int(self.burst_limiter.limit), 1),
+                    "window_seconds": float(self.burst_limiter.window_seconds),
+                    "reason": "profile_burst",
+                }
+            )
+
+        windows.append(
+            {
+                "key": self.profile_limiter._window_key(),
+                "limit": max(int(self.profile_limiter.limit), 1),
+                "window_seconds": float(self.profile_limiter.window_seconds),
+                "reason": "profile_window",
+            }
+        )
+
+        global_window = await self._global_sliding_window_spec(
+            position_amount=position_amount,
+            request_type=request_type,
+            profile=profile,
+        )
+        if global_window is None:
+            return None
+        global_redis, global_spec = global_window
+        if global_redis is not redis:
+            return None
+        windows.append(global_spec)
+        return redis, seq_key, windows
+
+    async def _global_sliding_window_spec(
+        self,
+        *,
+        position_amount: int | None,
+        request_type: str | None,
+        profile: str | None,
+    ) -> tuple[Redis, dict[str, object]] | None:
+        if isinstance(self.global_limiter, RedisAdaptiveTokenBucketRateLimiter):
+            limit, retry_wait_seconds = await self.global_limiter.active_limit_state()
+            if retry_wait_seconds is not None:
+                self._last_wait_seconds = retry_wait_seconds
+                self._last_limit_reason = "retry_after"
+                return (
+                    self.global_limiter.redis,
+                    {
+                        "key": self.global_limiter._window_key(),
+                        "limit": 0,
+                        "window_seconds": 60.0,
+                        "reason": "retry_after",
+                        "retry_wait_seconds": retry_wait_seconds,
+                    },
+                )
+            limit = self._priority_adjusted_account_limit(
+                limit,
+                position_amount=position_amount,
+                request_type=request_type,
+                profile=profile,
+            )
+            return (
+                self.global_limiter.redis,
+                {
+                    "key": self.global_limiter._window_key(),
+                    "limit": max(int(limit), 1),
+                    "window_seconds": 60.0,
+                    "reason": "account_window",
+                },
+            )
+        if isinstance(self.global_limiter, RedisSlidingWindowRateLimiter):
+            limit = self._priority_adjusted_account_limit(
+                self.global_limiter.limit,
+                position_amount=position_amount,
+                request_type=request_type,
+                profile=profile,
+            )
+            return (
+                self.global_limiter.redis,
+                {
+                    "key": self.global_limiter._window_key(),
+                    "limit": max(int(limit), 1),
+                    "window_seconds": float(self.global_limiter.window_seconds),
+                    "reason": "account_window",
+                },
+            )
+        return None
+
+    def _priority_adjusted_account_limit(
+        self,
+        limit: int,
+        *,
+        position_amount: int | None,
+        request_type: str | None,
+        profile: str | None,
+    ) -> int:
+        reserve = _account_reserve_slots(
+            profile=profile,
+            position_amount=position_amount,
+            request_type=request_type,
+        )
+        if reserve <= 0:
+            return limit
+        return max(limit - reserve, 1)
 
     def apply_backoff(self, error_kind: str | None = None) -> float:
         self._consecutive_errors += 1
@@ -670,6 +1164,30 @@ def _has_account_rate_limit_headers(headers: Mapping[str, str]) -> bool:
             "X-RateLimit-Reset",
         )
     )
+
+
+def _account_reserve_slots(
+    *,
+    profile: str | None,
+    position_amount: int | None,
+    request_type: str | None,
+) -> int:
+    """Hold a few account slots for hot requests when the 60s window is almost full."""
+    if position_amount == 500:
+        return 0
+
+    normalized_profile = (profile or "").lower().replace("-", "_")
+    reserve = 0
+    if normalized_profile in {"slow", "proxy_slow", "worker_slow"}:
+        reserve = 20
+    elif normalized_profile in {"fast_2", "proxy_fast_2", "worker_fast_2"}:
+        reserve = 10
+    elif normalized_profile in {"fast_1", "proxy_fast_1", "worker_fast_1"}:
+        reserve = 5
+
+    if request_type == "price_update":
+        return max(reserve - 5, 0)
+    return reserve
 
 
 def _int_state(state: dict[str, str], key: str, default: int) -> int:

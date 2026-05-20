@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio.session import AsyncSession
 from app.core.config import Settings
 from app.db.models import Position, PriceUpdateLog, UpdateStatus, WorkerHeartbeat, WorkerState
 from app.db.repositories import AppSettingsRepository, PositionRepository, WorkerHeartbeatRepository, WorkerStateRepository
-from app.repricer.rate_limiter import RedisFixedWindowRateLimiter
+from app.repricer.rate_limiter import RedisAdaptiveTokenBucketRateLimiter, RedisSlidingWindowRateLimiter
 
 
 @dataclass(frozen=True)
@@ -70,7 +70,24 @@ async def load_telegram_status_context(
 
 
 async def current_request_usage(*, settings: Settings, redis: Redis) -> int:
-    limiter = RedisFixedWindowRateLimiter(
+    if settings.token_limit_mode:
+        limiter = RedisAdaptiveTokenBucketRateLimiter(
+            redis,
+            configured_limit_per_minute=settings.global_request_limit_per_minute,
+            initial_effective_limit_per_minute=settings.account_effective_limit_per_minute,
+            min_limit_per_minute=settings.account_min_limit_per_minute,
+            target_limit_per_minute=settings.account_target_limit_per_minute,
+            target_min_limit_per_minute=settings.account_target_min_limit_per_minute,
+            target_decrease_step_per_minute=settings.account_target_decrease_step_per_minute,
+            target_ramp_idle_seconds=settings.account_target_ramp_idle_seconds,
+            decrease_step_per_minute=settings.account_limit_decrease_step_per_minute,
+            ramp_step_per_minute=settings.account_limit_ramp_step_per_minute,
+            ramp_idle_seconds=settings.account_limit_ramp_idle_seconds,
+            key_prefix="repricer:account-token-limit",
+        )
+        return (await limiter.snapshot()).current_usage
+
+    limiter = RedisSlidingWindowRateLimiter(
         redis,
         limit=(
             settings.global_request_limit_per_minute
@@ -79,9 +96,9 @@ async def current_request_usage(*, settings: Settings, redis: Redis) -> int:
         ),
         window_seconds=60,
         key_prefix=(
-            "repricer:rate-limit:global"
+            "repricer:sliding-window:global"
             if settings.proxy_mode == "enabled"
-            else "repricer:rate-limit"
+            else "repricer:sliding-window"
         ),
     )
     return await limiter.current_usage()
