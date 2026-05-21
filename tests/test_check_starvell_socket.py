@@ -108,7 +108,14 @@ def test_probe_payloads_include_viewed_offers_variants() -> None:
     assert ("subscribe", {"lotIds": [1996, 2000]}) in payloads
     assert ("subscribe", {"offer_ids": ["1996", "2000"]}) in payloads
     assert ("offers", {}) in payloads
+    assert ("offer_subscribe", {"offerIds": [1996, 2000]}) in payloads
+    assert ("offers_subscribe", {"offerIds": [1996, 2000]}) in payloads
+    assert ("price_subscribe", {"offerIds": [1996, 2000]}) in payloads
+    assert ("market_subscribe", {"subCategoryIds": [65]}) in payloads
+    assert ("category_subscribe", {"categoryIds": [65]}) in payloads
+    assert ("viewed_offer_subscribe", {"offerIds": [1996, 2000]}) in payloads
     assert ("watch", {"room": "offers"}) in payloads
+    assert ("watch", {"offerId": 1996}) in payloads
     assert ("watch", {"subCategoryIds": [65]}) in payloads
     assert ("subscribe", {"category_ids": ["65"]}) in payloads
 
