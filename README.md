@@ -48,7 +48,8 @@ read-only endpoint списка офферов:
 - `MARKET_OFFERS_API_URL` по умолчанию `/api/offers/list-by-category` и используется
   для списка публичных предложений-конкурентов по `subCategoryId`;
 - `MARKET_OFFERS_URL` по умолчанию `/roblox/packages` оставлен как fallback HTML-страницы;
-- текущая цена своего лота читается со страницы `/offers/{lot_id}`.
+- текущая цена своего лота читается со страницы `/offers/{lot_id}` и кэшируется,
+  чтобы не тратить лишние запросы в каждом цикле.
 
 Для безопасной проверки подключения можно указать найденные через DevTools GET URL:
 
@@ -58,6 +59,9 @@ MARKET_MY_LOTS_URL=
 MARKET_OFFERS_URL=/roblox/packages
 MARKET_OFFERS_API_URL=/api/offers/list-by-category
 MARKET_OFFERS_LIMIT=100
+MARKET_OFFERS_REQUEST_LIMIT_PER_MINUTE=160
+MARKET_RESPONSE_CACHE_TTL_MS=300
+MY_LOT_STATE_CACHE_TTL_SECONDS=60
 ```
 
 Реальное изменение цены включается только при одновременном выполнении трех условий:
@@ -188,6 +192,9 @@ MARKET_MY_LOTS_URL=...
 MARKET_OFFERS_URL=/roblox/packages
 MARKET_OFFERS_API_URL=/api/offers/list-by-category
 MARKET_OFFERS_LIMIT=100
+MARKET_OFFERS_REQUEST_LIMIT_PER_MINUTE=160
+MARKET_RESPONSE_CACHE_TTL_MS=300
+MY_LOT_STATE_CACHE_TTL_SECONDS=60
 ```
 
 Секреты не коммитить. Файл `.env` находится в `.gitignore`.

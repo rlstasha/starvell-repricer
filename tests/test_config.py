@@ -105,8 +105,10 @@ def test_request_pacing_defaults_are_fast_when_proxies_are_healthy() -> None:
     assert settings.request_min_delay_ms == 100
     assert settings.request_jitter_ms == 50
     assert settings.global_request_burst_limit == 10
-    assert settings.my_lot_state_cache_ttl_seconds == 10
+    assert settings.my_lot_state_cache_ttl_seconds == 60
     assert settings.price_update_context_cache_ttl_seconds == 60
+    assert settings.market_response_cache_ttl_ms == 300
+    assert settings.market_offers_request_limit_per_minute == 160
 
 
 def test_starvell_socket_defaults_to_disabled_optional_mode() -> None:

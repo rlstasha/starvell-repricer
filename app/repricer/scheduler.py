@@ -698,11 +698,17 @@ class RepricerScheduler:
             window_seconds=self.settings.global_request_burst_window_seconds,
             key_prefix="repricer:sliding-window:burst:account",
         )
+        market_offers = RedisSlidingWindowRateLimiter(
+            self.redis,
+            limit=self.settings.market_offers_request_limit_per_minute,
+            key_prefix="repricer:sliding-window:market-offers",
+        )
         return CompositeRateLimiter(
             profile_limiter=profile,
             global_limiter=global_limiter,
             burst_limiter=burst,
             account_burst_limiter=account_burst,
+            market_offers_limiter=market_offers,
             min_delay_ms=self.settings.request_min_delay_ms,
             max_delay_ms=self.settings.request_max_delay_ms,
             jitter_ms=self.settings.request_jitter_ms,

@@ -295,6 +295,38 @@ async def test_composite_limiter_can_guard_global_bursts() -> None:
     assert await limiter.try_acquire() is False
 
 
+@pytest.mark.asyncio
+async def test_market_offers_limiter_only_guards_market_reads(monkeypatch) -> None:
+    now = [1000.0]
+    monkeypatch.setattr(rate_limiter_module.time, "time", lambda: now[0])
+    redis = FakeRedis()
+    limiter = CompositeRateLimiter(
+        profile_limiter=RedisSlidingWindowRateLimiter(redis, limit=300, key_prefix="profile"),
+        global_limiter=RedisAdaptiveTokenBucketRateLimiter(
+            redis,
+            configured_limit_per_minute=300,
+            initial_effective_limit_per_minute=300,
+            target_limit_per_minute=295,
+            key_prefix="account",
+        ),
+        market_offers_limiter=RedisSlidingWindowRateLimiter(
+            redis,
+            limit=2,
+            key_prefix="market-offers",
+        ),
+    )
+
+    assert await limiter.try_acquire_for_request(request_type="market_offers") is True
+    assert await limiter.try_acquire_for_request(request_type="market_offers") is True
+    assert await limiter.try_acquire_for_request(request_type="market_offers") is False
+    assert limiter.last_limit_reason == "market_offers_window"
+
+    assert await limiter.try_acquire_for_request(request_type="price_update") is True
+
+    assert len(redis.zsets["market-offers:events"]) == 2
+    assert len(redis.zsets["account:events"]) == 3
+
+
 def test_retry_after_header_seconds_are_parsed() -> None:
     assert retry_after_delay_seconds({"Retry-After": "8"}, now=100.0) == 8.0
 

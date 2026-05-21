@@ -89,6 +89,7 @@ class RepricerEngine:
         strategy_ms = 0.0
         price_update_ms = 0.0
         my_lot_cache_hit = False
+        my_lot_source = "not_checked"
 
         if not position.lot_id:
             await self._record_missing_lot(position)
@@ -112,6 +113,7 @@ class RepricerEngine:
                 current_price=result.old_price,
                 target_price=result.new_price,
                 my_lot_cache_hit=my_lot_cache_hit,
+                my_lot_source=my_lot_source,
             )
             return result
 
@@ -122,15 +124,21 @@ class RepricerEngine:
         )
         market_request_ms = _elapsed_ms(market_started_at)
         offers = market_result.offers
-        my_lot_metrics_before = self.starvell_client.request_metrics_snapshot()
-        my_lot_started_at = perf_counter()
-        own_lot = await self.starvell_client.get_my_lot(position.robux_amount, position.lot_id)
-        my_lot_request_ms = _elapsed_ms(my_lot_started_at)
-        my_lot_request_delta = _request_metrics_delta(
-            my_lot_metrics_before,
-            self.starvell_client.request_metrics_snapshot(),
-        )
-        my_lot_cache_hit = own_lot is not None and my_lot_request_delta.get("my_lot", 0) == 0
+        if market_result.own_lot is not None:
+            own_lot = market_result.own_lot
+            my_lot_cache_hit = True
+            my_lot_source = "market_response"
+        else:
+            my_lot_metrics_before = self.starvell_client.request_metrics_snapshot()
+            my_lot_started_at = perf_counter()
+            own_lot = await self.starvell_client.get_my_lot(position.robux_amount, position.lot_id)
+            my_lot_request_ms = _elapsed_ms(my_lot_started_at)
+            my_lot_request_delta = _request_metrics_delta(
+                my_lot_metrics_before,
+                self.starvell_client.request_metrics_snapshot(),
+            )
+            my_lot_cache_hit = own_lot is not None and my_lot_request_delta.get("my_lot", 0) == 0
+            my_lot_source = "cache" if my_lot_cache_hit else "offer_page"
         current_price = self._current_price(position, own_lot)
 
         strategy_started_at = perf_counter()
@@ -144,11 +152,7 @@ class RepricerEngine:
             offers,
             filter_settings,
         )
-        ignored_counts = Counter(
-            reason
-            for offer in offers
-            if (reason := self.competitor_filter.ignore_reason(offer, filter_settings))
-        )
+        ignored_counts = Counter(filter_result.ignored_reasons.values())
         self.logger.info(
             "repricer_competitor_diagnostics",
             proxy_profile=self.settings.worker_group,
@@ -162,6 +166,20 @@ class RepricerEngine:
             offers_after_filter=len(filter_result.accepted),
             parser_rejected_count=market_result.parser_rejected_count,
             ignored_reasons=dict(ignored_counts),
+            market_cache_hit=market_result.cache_hit,
+            market_limit=(
+                market_result.request_payload or {}
+            ).get("limit"),
+            market_offset=(
+                market_result.request_payload or {}
+            ).get("offset"),
+            market_sort_by=(
+                market_result.request_payload or {}
+            ).get("sortBy"),
+            market_sort_dir=(
+                market_result.request_payload or {}
+            ).get("sortDir"),
+            own_lot_from_market=market_result.own_lot is not None,
         )
         await self.positions.add_competitor_snapshots(
             position,
@@ -210,6 +228,7 @@ class RepricerEngine:
                 current_price=current_price,
                 target_price=None,
                 my_lot_cache_hit=my_lot_cache_hit,
+                my_lot_source=my_lot_source,
             )
             return result
 
@@ -242,6 +261,7 @@ class RepricerEngine:
                 current_price=current_price,
                 target_price=decision.target_price,
                 my_lot_cache_hit=my_lot_cache_hit,
+                my_lot_source=my_lot_source,
             )
             return result
 
@@ -282,6 +302,7 @@ class RepricerEngine:
                 current_price=current_price,
                 target_price=decision.target_price,
                 my_lot_cache_hit=my_lot_cache_hit,
+                my_lot_source=my_lot_source,
             )
             return result
 
@@ -330,6 +351,7 @@ class RepricerEngine:
             current_price=current_price,
             target_price=decision.target_price,
             my_lot_cache_hit=my_lot_cache_hit,
+            my_lot_source=my_lot_source,
         )
         return result
 
@@ -436,6 +458,7 @@ class RepricerEngine:
         current_price: Decimal | None,
         target_price: Decimal | None,
         my_lot_cache_hit: bool,
+        my_lot_source: str,
     ) -> None:
         request_metrics_delta = _request_metrics_delta(
             request_metrics_before,
@@ -466,6 +489,7 @@ class RepricerEngine:
                 str(result.competitor_price) if result.competitor_price is not None else None
             ),
             my_lot_cache_hit=my_lot_cache_hit,
+            my_lot_source=my_lot_source,
         )
 
 

@@ -1,8 +1,9 @@
+import asyncio
 import html as html_module
 import json
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from typing import Any
 from urllib.parse import quote
@@ -113,6 +114,9 @@ class MarketOffersFetchResult:
     offers: list[MarketOffer]
     subcategory_id: int | None = None
     parser_rejected_count: int = 0
+    own_lot: OwnLot | None = None
+    cache_hit: bool = False
+    request_payload: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -146,6 +150,8 @@ class StarvellClient:
         self.logger = get_logger(__name__)
         self._own_lot_cache: dict[str, tuple[float, OwnLot]] = {}
         self._price_update_context_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+        self._market_offers_cache: dict[str, tuple[float, MarketOffersFetchResult]] = {}
+        self._market_offers_inflight: dict[str, asyncio.Task[MarketOffersFetchResult]] = {}
         self._request_counts: dict[str, int] = {"total": 0}
 
     async def __aenter__(self) -> "StarvellClient":
@@ -442,37 +448,85 @@ class StarvellClient:
         """Fetch public market offers and keep diagnostics about the requested source."""
         subcategory_id = STARVELL_ROBUX_SUBCATEGORY_IDS.get(position_amount)
         if self.settings.market_offers_api_url and subcategory_id is not None:
-            response = await self._request(
-                "POST",
+            request_payload = _market_offers_api_payload(
+                position_amount=position_amount,
+                limit=self.settings.market_offers_limit,
+            )
+            cache_key = self._market_offers_cache_key(
                 self.settings.market_offers_api_url,
-                request_type="market_offers",
-                position_amount=position_amount,
-                json=_market_offers_api_payload(
-                    position_amount=position_amount,
-                    limit=self.settings.market_offers_limit,
-                ),
-            )
-            payload = response.json()
-            raw_items = _extract_offer_payload_items(payload)
-            offers = parse_starvell_market_offers_payload(
-                raw_items,
-                position_amount=position_amount,
-            )
-            result = MarketOffersFetchResult(
-                position_amount=position_amount,
+                request_payload,
                 lot_id=lot_id,
-                method="POST",
-                url=self.settings.market_offers_api_url,
-                source="api_list_by_category",
-                raw_offer_count=len(raw_items),
-                offers=offers,
-                subcategory_id=subcategory_id,
-                parser_rejected_count=max(len(raw_items) - len(offers), 0),
             )
-            self._log_empty_market_result(result)
+            if cached_result := self._cached_market_offers_result(cache_key):
+                return cached_result
+
+            if inflight := self._market_offers_inflight.get(cache_key):
+                result = await inflight
+                return replace(result, cache_hit=True)
+
+            task = asyncio.create_task(
+                self._fetch_market_offers_api_result(
+                    position_amount=position_amount,
+                    lot_id=lot_id,
+                    request_payload=request_payload,
+                    subcategory_id=subcategory_id,
+                )
+            )
+            self._market_offers_inflight[cache_key] = task
+            try:
+                result = await task
+            finally:
+                if self._market_offers_inflight.get(cache_key) is task:
+                    self._market_offers_inflight.pop(cache_key, None)
+            self._remember_market_offers_result(cache_key, result)
             return result
 
         return await self._get_market_offers_from_category_html(position_amount, lot_id)
+
+    async def _fetch_market_offers_api_result(
+        self,
+        *,
+        position_amount: int,
+        lot_id: str | None,
+        request_payload: dict[str, Any],
+        subcategory_id: int,
+    ) -> MarketOffersFetchResult:
+        response = await self._request(
+            "POST",
+            self.settings.market_offers_api_url,
+            request_type="market_offers",
+            position_amount=position_amount,
+            json=request_payload,
+        )
+        payload = response.json()
+        raw_items = _extract_offer_payload_items(payload)
+        offers = parse_starvell_market_offers_payload(
+            raw_items,
+            position_amount=position_amount,
+        )
+        own_lot = _extract_own_lot_from_offer_items(
+            raw_items,
+            position_amount=position_amount,
+            lot_id=lot_id,
+            own_seller_id=self.settings.own_seller_id,
+        )
+        if own_lot is not None:
+            self._remember_own_lot(own_lot)
+        result = MarketOffersFetchResult(
+            position_amount=position_amount,
+            lot_id=lot_id,
+            method="POST",
+            url=self.settings.market_offers_api_url,
+            source="api_list_by_category",
+            raw_offer_count=len(raw_items),
+            offers=offers,
+            subcategory_id=subcategory_id,
+            parser_rejected_count=max(len(raw_items) - len(offers), 0),
+            own_lot=own_lot,
+            request_payload=dict(request_payload),
+        )
+        self._log_empty_market_result(result)
+        return result
 
     async def _get_market_offers_from_category_html(
         self,
@@ -866,6 +920,40 @@ class StarvellClient:
         if self.settings.price_update_context_cache_ttl_seconds <= 0:
             return
         self._price_update_context_cache[str(lot_id)] = (time.monotonic(), dict(context))
+
+    def _market_offers_cache_key(
+        self,
+        url: str,
+        payload: dict[str, Any],
+        *,
+        lot_id: str | None,
+    ) -> str:
+        payload_key = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        return f"{url}:lot={lot_id or ''}:{payload_key}"
+
+    def _cached_market_offers_result(self, cache_key: str) -> MarketOffersFetchResult | None:
+        ttl_ms = self.settings.market_response_cache_ttl_ms
+        if ttl_ms <= 0:
+            return None
+        cached = self._market_offers_cache.get(cache_key)
+        if cached is None:
+            return None
+        cached_at, result = cached
+        if (time.monotonic() - cached_at) * 1000 > ttl_ms:
+            self._market_offers_cache.pop(cache_key, None)
+            return None
+        if result.own_lot is not None:
+            self._remember_own_lot(result.own_lot)
+        return replace(result, cache_hit=True)
+
+    def _remember_market_offers_result(
+        self,
+        cache_key: str,
+        result: MarketOffersFetchResult,
+    ) -> None:
+        if self.settings.market_response_cache_ttl_ms <= 0:
+            return
+        self._market_offers_cache[cache_key] = (time.monotonic(), replace(result, cache_hit=False))
 
     def _forget_lot_caches(self, lot_id: str) -> None:
         self._own_lot_cache.pop(str(lot_id), None)
@@ -1832,19 +1920,117 @@ def _parse_market_offer(
     if price is None:
         return None
 
-    user = payload.get("user")
-    if not isinstance(user, dict):
-        user = {}
-
     return MarketOffer(
         position_amount=position_amount,
         price=price,
-        seller_id=_find_direct_string(user, ("id", "seller_id", "sellerId", "user_id", "userId")),
-        seller_username=_find_direct_string(user, ("username", "name", "login")),
-        rating=_find_direct_decimal(user, ("rating", "avgRating")),
+        seller_id=_seller_id_from_offer_payload(payload),
+        seller_username=_seller_username_from_offer_payload(payload),
+        rating=_seller_rating_from_offer_payload(payload),
         is_active=_is_offer_active(payload),
         raw_payload=payload,
     )
+
+
+def _extract_own_lot_from_offer_items(
+    payload_offers: list[dict[str, Any]],
+    *,
+    position_amount: int,
+    lot_id: str | None,
+    own_seller_id: str | None = None,
+) -> OwnLot | None:
+    if not lot_id and not own_seller_id:
+        return None
+    normalized_lot_id = str(lot_id) if lot_id else None
+    normalized_seller_id = str(own_seller_id) if own_seller_id else None
+    for payload in payload_offers:
+        if normalized_lot_id:
+            own_lot = _parse_own_lot_payload(
+                payload,
+                position_amount=position_amount,
+                lot_id=normalized_lot_id,
+            )
+            if own_lot is not None:
+                return own_lot
+
+        if normalized_seller_id and _seller_id_from_offer_payload(payload) == normalized_seller_id:
+            return _own_lot_from_market_payload(
+                payload,
+                position_amount=position_amount,
+                lot_id=normalized_lot_id,
+            )
+    return None
+
+
+def _parse_own_lot_payload(
+    payload: dict[str, Any],
+    *,
+    position_amount: int,
+    lot_id: str,
+) -> OwnLot | None:
+    parsed_lot_id = _find_direct_string(payload, ("lot_id", "lotId", "listing_id", "listingId"))
+    if parsed_lot_id != str(lot_id):
+        return None
+
+    return _own_lot_from_market_payload(
+        payload,
+        position_amount=position_amount,
+        lot_id=str(lot_id),
+    )
+
+
+def _own_lot_from_market_payload(
+    payload: dict[str, Any],
+    *,
+    position_amount: int,
+    lot_id: str | None,
+) -> OwnLot | None:
+    parsed_amount = _extract_amount_from_offer_payload(payload)
+    if parsed_amount is not None and parsed_amount != position_amount:
+        return None
+
+    price = _find_direct_decimal(payload, ("price", "cost", "amount_price", "amountPrice"))
+    if price is None:
+        return None
+
+    parsed_lot_id = _find_direct_string(
+        payload,
+        ("lot_id", "lotId", "listing_id", "listingId", "offer_id", "offerId", "id"),
+    )
+    return OwnLot(
+        position_amount=position_amount,
+        price=price,
+        lot_id=str(lot_id or parsed_lot_id) if lot_id or parsed_lot_id else None,
+        raw_payload=payload,
+    )
+
+
+def _seller_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    for key in ("user", "seller", "owner"):
+        value = payload.get(key)
+        if isinstance(value, dict):
+            return value
+    return {}
+
+
+def _seller_id_from_offer_payload(payload: dict[str, Any]) -> str | None:
+    direct_id = _find_direct_string(
+        payload,
+        ("seller_id", "sellerId", "seller_user_id", "sellerUserId", "user_id", "userId"),
+    )
+    if direct_id is not None:
+        return direct_id
+    return _find_direct_string(
+        _seller_payload(payload),
+        ("id", "seller_id", "sellerId", "user_id", "userId"),
+    )
+
+
+def _seller_username_from_offer_payload(payload: dict[str, Any]) -> str | None:
+    return _find_direct_string(_seller_payload(payload), ("username", "name", "login"))
+
+
+def _seller_rating_from_offer_payload(payload: dict[str, Any]) -> Decimal | None:
+    return _find_direct_decimal(_seller_payload(payload), ("rating", "avgRating"))
 
 
 def _extract_amount_from_offer_payload(payload: dict[str, Any]) -> int | None:
@@ -1882,7 +2068,6 @@ def _market_offers_api_payload(*, position_amount: int, limit: int) -> dict[str,
     return {
         "categoryId": STARVELL_CATEGORY_ID,
         "subCategoryId": subcategory_id,
-        "onlyOnlineUsers": False,
         "attributes": [],
         "numericRangeFilters": [],
         "limit": limit,

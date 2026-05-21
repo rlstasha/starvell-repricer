@@ -360,6 +360,13 @@ async def test_get_market_offers_uses_read_only_api_category_endpoint() -> None:
         payload = json.loads(request.content)
         assert payload["categoryId"] == 40
         assert payload["subCategoryId"] == 65
+        assert payload["limit"] == 100
+        assert payload["offset"] == 0
+        assert payload["sortBy"] == "price"
+        assert payload["sortDir"] == "ASC"
+        assert payload["sortByPriceAndBumped"] is True
+        assert payload["withCompletionRates"] is True
+        assert "onlyOnlineUsers" not in payload
         return httpx.Response(
             200,
             json=[
@@ -391,6 +398,162 @@ async def test_get_market_offers_uses_read_only_api_category_endpoint() -> None:
     assert result.raw_offer_count == 1
     assert len(result.offers) == 1
     assert result.offers[0].price == Decimal("75.70000")
+
+
+@pytest.mark.asyncio
+async def test_market_offers_result_uses_own_lot_from_list_by_category() -> None:
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert request.method == "POST"
+        assert request.url.path == "/api/offers/list-by-category"
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "id": 222759,
+                    "lotId": "2000",
+                    "price": "339.90000",
+                    "availability": 927,
+                    "minOrderCurrencyAmount": None,
+                    "isActive": True,
+                    "instantDelivery": False,
+                    "subCategory": {"id": 333, "name": "500 робуксов"},
+                    "user": {"id": 4111, "username": "zoomplex", "rating": 5},
+                },
+                {
+                    "id": 222760,
+                    "price": "306.30000",
+                    "availability": 995,
+                    "subCategory": {"id": 333, "name": "500 робуксов"},
+                    "user": {"id": 70238, "username": "seller", "rating": 5},
+                },
+            ],
+        )
+
+    client = httpx.AsyncClient(
+        base_url="https://starvell.example",
+        transport=httpx.MockTransport(handler),
+    )
+    settings = Settings(
+        _env_file=None,
+        market_base_url="https://starvell.example",
+        market_offers_api_url="/api/offers/list-by-category",
+        own_seller_id="4111",
+        my_lot_state_cache_ttl_seconds=10,
+        price_update_context_cache_ttl_seconds=60,
+    )
+
+    async with StarvellClient(settings, InMemoryFixedWindowRateLimiter(), client) as starvell:
+        result = await starvell.get_market_offers_result(500, "2000")
+        own_lot = await starvell.get_my_lot(500, "2000")
+
+    assert result.own_lot is not None
+    assert result.own_lot.price == Decimal("339.90000")
+    assert result.own_lot.raw_payload is not None
+    assert own_lot is not None
+    assert own_lot.price == Decimal("339.90000")
+    assert [(request.method, request.url.path) for request in requests] == [
+        ("POST", "/api/offers/list-by-category"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_market_offers_result_can_match_own_lot_by_seller_id() -> None:
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "id": 222760,
+                    "price": "339.90000",
+                    "availability": 927,
+                    "minOrderCurrencyAmount": None,
+                    "isActive": True,
+                    "instantDelivery": False,
+                    "subCategory": {"id": 333, "name": "500 робуксов"},
+                    "user": {"id": 4111, "username": "zoomplex", "rating": 5},
+                },
+                {
+                    "id": 222761,
+                    "price": "306.30000",
+                    "availability": 995,
+                    "subCategory": {"id": 333, "name": "500 робуксов"},
+                    "user": {"id": 70238, "username": "seller", "rating": 5},
+                },
+            ],
+        )
+
+    client = httpx.AsyncClient(
+        base_url="https://starvell.example",
+        transport=httpx.MockTransport(handler),
+    )
+    settings = Settings(
+        _env_file=None,
+        market_base_url="https://starvell.example",
+        market_offers_api_url="/api/offers/list-by-category",
+        own_seller_id="4111",
+        my_lot_state_cache_ttl_seconds=60,
+    )
+
+    async with StarvellClient(settings, InMemoryFixedWindowRateLimiter(), client) as starvell:
+        result = await starvell.get_market_offers_result(500, "2000")
+        own_lot = await starvell.get_my_lot(500, "2000")
+
+    assert result.own_lot is not None
+    assert result.own_lot.lot_id == "2000"
+    assert result.own_lot.price == Decimal("339.90000")
+    assert own_lot is not None
+    assert own_lot.price == Decimal("339.90000")
+    assert [(request.method, request.url.path) for request in requests] == [
+        ("POST", "/api/offers/list-by-category"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_market_offers_result_short_cache_reuses_identical_request() -> None:
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "id": 222760,
+                    "price": "306.30000",
+                    "availability": 995,
+                    "subCategory": {"id": 333, "name": "500 робуксов"},
+                    "user": {"id": 70238, "username": "seller", "rating": 5},
+                },
+            ],
+        )
+
+    client = httpx.AsyncClient(
+        base_url="https://starvell.example",
+        transport=httpx.MockTransport(handler),
+    )
+    settings = Settings(
+        _env_file=None,
+        market_base_url="https://starvell.example",
+        market_offers_api_url="/api/offers/list-by-category",
+        market_response_cache_ttl_ms=500,
+    )
+
+    async with StarvellClient(settings, InMemoryFixedWindowRateLimiter(), client) as starvell:
+        first = await starvell.get_market_offers_result(500, "2000")
+        second = await starvell.get_market_offers_result(500, "2000")
+
+    assert first.cache_hit is False
+    assert second.cache_hit is True
+    assert len(second.offers) == 1
+    assert [(request.method, request.url.path) for request in requests] == [
+        ("POST", "/api/offers/list-by-category"),
+    ]
 
 
 @pytest.mark.asyncio

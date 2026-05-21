@@ -717,6 +717,7 @@ class CompositeRateLimiter:
         global_limiter: RateLimiter,
         burst_limiter: RateLimiter | None = None,
         account_burst_limiter: RateLimiter | None = None,
+        market_offers_limiter: RateLimiter | None = None,
         min_delay_ms: int = 0,
         max_delay_ms: int = 5000,
         jitter_ms: int = 0,
@@ -727,6 +728,7 @@ class CompositeRateLimiter:
         self.global_limiter = global_limiter
         self.burst_limiter = burst_limiter
         self.account_burst_limiter = account_burst_limiter
+        self.market_offers_limiter = market_offers_limiter
         self.min_delay_ms = min_delay_ms
         self.max_delay_ms = max_delay_ms
         self.jitter_ms = jitter_ms
@@ -936,6 +938,20 @@ class CompositeRateLimiter:
                     "limit": max(int(self.burst_limiter.limit), 1),
                     "window_seconds": float(self.burst_limiter.window_seconds),
                     "reason": "profile_burst",
+                }
+            )
+
+        if request_type == "market_offers" and self.market_offers_limiter is not None:
+            if not isinstance(self.market_offers_limiter, RedisSlidingWindowRateLimiter):
+                return None
+            if self.market_offers_limiter.redis is not redis:
+                return None
+            windows.append(
+                {
+                    "key": self.market_offers_limiter._window_key(),
+                    "limit": max(int(self.market_offers_limiter.limit), 1),
+                    "window_seconds": float(self.market_offers_limiter.window_seconds),
+                    "reason": "market_offers_window",
                 }
             )
 

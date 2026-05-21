@@ -44,13 +44,15 @@ class Settings(BaseSettings):
     market_offers_url: str = "/roblox/packages"
     market_offers_api_url: str = "/api/offers/list-by-category"
     market_offers_limit: int = Field(default=100, ge=1, le=500)
+    market_offers_request_limit_per_minute: int = Field(default=160, ge=1)
+    market_response_cache_ttl_ms: int = Field(default=300, ge=0, le=5000)
     enable_real_price_writes: bool = False
     market_update_lot_price_url: str = ""
     market_update_lot_price_method: str = "POST"
     market_update_price_payload_style: str = "partial_update"
     market_update_price_content_type: str = "json"
     price_write_discovery: bool = False
-    my_lot_state_cache_ttl_seconds: float = Field(default=10.0, ge=0)
+    my_lot_state_cache_ttl_seconds: float = Field(default=60.0, ge=0)
     price_update_context_cache_ttl_seconds: float = Field(default=60.0, ge=0)
     starvell_socket_enabled: bool = False
     starvell_socket_namespace: str = "/viewed-offers"
