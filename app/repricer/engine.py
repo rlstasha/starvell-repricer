@@ -1,5 +1,6 @@
 from collections import Counter
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from decimal import Decimal
 from time import perf_counter
 
@@ -38,11 +39,15 @@ class RepricerEngine:
         settings: Settings,
         starvell_client: StarvellClient,
         dry_run: bool | None = None,
+        scheduler_delay_ms: float | None = None,
+        scheduler_delay_reason: str | None = None,
     ):
         self.session = session
         self.settings = settings
         self.starvell_client = starvell_client
         self.dry_run = settings.dry_run if dry_run is None else dry_run
+        self.scheduler_delay_ms = scheduler_delay_ms
+        self.scheduler_delay_reason = scheduler_delay_reason
         self.positions = PositionRepository(session)
         self.competitor_filter = CompetitorFilter()
         self.strategy = UndercutByStepStrategy()
@@ -90,6 +95,8 @@ class RepricerEngine:
         price_update_ms = 0.0
         my_lot_cache_hit = False
         my_lot_source = "not_checked"
+        market_cache_hit = False
+        category_payload_size: int | None = None
 
         if not position.lot_id:
             await self._record_missing_lot(position)
@@ -101,7 +108,7 @@ class RepricerEngine:
                 None,
                 position.state.last_seen_competitor_price if position.state else None,
             )
-            self._log_cycle_profile(
+            await self._log_cycle_profile(
                 position=position,
                 result=result,
                 request_metrics_before=request_metrics_before,
@@ -114,6 +121,8 @@ class RepricerEngine:
                 target_price=result.new_price,
                 my_lot_cache_hit=my_lot_cache_hit,
                 my_lot_source=my_lot_source,
+                market_cache_hit=market_cache_hit,
+                category_payload_size=category_payload_size,
             )
             return result
 
@@ -124,6 +133,8 @@ class RepricerEngine:
         )
         market_request_ms = _elapsed_ms(market_started_at)
         offers = market_result.offers
+        market_cache_hit = market_result.cache_hit
+        category_payload_size = market_result.response_size_bytes
         if market_result.own_lot is not None:
             own_lot = market_result.own_lot
             my_lot_cache_hit = True
@@ -180,6 +191,7 @@ class RepricerEngine:
                 market_result.request_payload or {}
             ).get("sortDir"),
             own_lot_from_market=market_result.own_lot is not None,
+            category_payload_size=category_payload_size,
         )
         await self.positions.add_competitor_snapshots(
             position,
@@ -216,7 +228,7 @@ class RepricerEngine:
                 None,
                 decision.competitor_price,
             )
-            self._log_cycle_profile(
+            await self._log_cycle_profile(
                 position=position,
                 result=result,
                 request_metrics_before=request_metrics_before,
@@ -229,6 +241,8 @@ class RepricerEngine:
                 target_price=None,
                 my_lot_cache_hit=my_lot_cache_hit,
                 my_lot_source=my_lot_source,
+                market_cache_hit=market_cache_hit,
+                category_payload_size=category_payload_size,
             )
             return result
 
@@ -249,7 +263,7 @@ class RepricerEngine:
                 decision.target_price,
                 decision.competitor_price,
             )
-            self._log_cycle_profile(
+            await self._log_cycle_profile(
                 position=position,
                 result=result,
                 request_metrics_before=request_metrics_before,
@@ -262,6 +276,8 @@ class RepricerEngine:
                 target_price=decision.target_price,
                 my_lot_cache_hit=my_lot_cache_hit,
                 my_lot_source=my_lot_source,
+                market_cache_hit=market_cache_hit,
+                category_payload_size=category_payload_size,
             )
             return result
 
@@ -290,7 +306,7 @@ class RepricerEngine:
                 decision.target_price,
                 decision.competitor_price,
             )
-            self._log_cycle_profile(
+            await self._log_cycle_profile(
                 position=position,
                 result=result,
                 request_metrics_before=request_metrics_before,
@@ -303,6 +319,8 @@ class RepricerEngine:
                 target_price=decision.target_price,
                 my_lot_cache_hit=my_lot_cache_hit,
                 my_lot_source=my_lot_source,
+                market_cache_hit=market_cache_hit,
+                category_payload_size=category_payload_size,
             )
             return result
 
@@ -339,7 +357,7 @@ class RepricerEngine:
             decision.target_price,
             decision.competitor_price,
         )
-        self._log_cycle_profile(
+        await self._log_cycle_profile(
             position=position,
             result=result,
             request_metrics_before=request_metrics_before,
@@ -352,6 +370,8 @@ class RepricerEngine:
             target_price=decision.target_price,
             my_lot_cache_hit=my_lot_cache_hit,
             my_lot_source=my_lot_source,
+            market_cache_hit=market_cache_hit,
+            category_payload_size=category_payload_size,
         )
         return result
 
@@ -444,7 +464,7 @@ class RepricerEngine:
             return position.state.current_own_price
         return None
 
-    def _log_cycle_profile(
+    async def _log_cycle_profile(
         self,
         *,
         position: Position,
@@ -459,11 +479,14 @@ class RepricerEngine:
         target_price: Decimal | None,
         my_lot_cache_hit: bool,
         my_lot_source: str,
+        market_cache_hit: bool,
+        category_payload_size: int | None,
     ) -> None:
         request_metrics_delta = _request_metrics_delta(
             request_metrics_before,
             self.starvell_client.request_metrics_snapshot(),
         )
+        profile_usage, account_usage = await self._rate_limit_usage()
         self.logger.info(
             "repricer_cycle_profile",
             proxy_profile=self.settings.worker_group,
@@ -471,15 +494,24 @@ class RepricerEngine:
             lot_id=position.lot_id,
             cycle_total_ms=_elapsed_ms(cycle_started_at),
             requests_count=request_metrics_delta.get("total", 0),
+            requests_last_60s=profile_usage,
+            account_requests_last_60s=account_usage,
             requests_by_type={
                 key: value
                 for key, value in sorted(request_metrics_delta.items())
                 if key != "total"
             },
             market_request_ms=round(market_request_ms, 2),
+            market_cache_hit=market_cache_hit,
             my_lot_request_ms=round(my_lot_request_ms, 2),
             strategy_ms=round(strategy_ms, 2),
             price_update_ms=round(price_update_ms, 2),
+            scheduler_delay_ms=self.scheduler_delay_ms,
+            scheduler_delay_reason=self.scheduler_delay_reason,
+            time_since_last_update_seconds=_seconds_since(
+                position.state.last_update_time if position.state else None
+            ),
+            category_payload_size=category_payload_size,
             status=result.status,
             skipped_reason=result.reason if result.status == UpdateStatus.SKIPPED.value else None,
             reason=result.reason,
@@ -491,6 +523,24 @@ class RepricerEngine:
             my_lot_cache_hit=my_lot_cache_hit,
             my_lot_source=my_lot_source,
         )
+
+    async def _rate_limit_usage(self) -> tuple[int | None, int | None]:
+        rate_limiter = self.starvell_client.rate_limiter
+        profile_usage: int | None = None
+        account_usage: int | None = None
+        if hasattr(rate_limiter, "current_usage"):
+            try:
+                profile_usage = int(await rate_limiter.current_usage())
+            except Exception:
+                profile_usage = None
+        if hasattr(rate_limiter, "account_snapshot"):
+            try:
+                snapshot = await rate_limiter.account_snapshot()
+            except Exception:
+                snapshot = None
+            if snapshot is not None:
+                account_usage = int(snapshot.current_usage)
+        return profile_usage, account_usage
 
 
 def _elapsed_ms(started_at: float) -> float:
@@ -504,3 +554,11 @@ def _request_metrics_delta(before: dict[str, int], after: dict[str, int]) -> dic
         for key in sorted(keys)
         if (value := after.get(key, 0) - before.get(key, 0)) > 0
     }
+
+
+def _seconds_since(value: datetime | None) -> float | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return round((datetime.now(UTC) - value).total_seconds(), 2)

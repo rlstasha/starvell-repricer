@@ -117,6 +117,7 @@ class MarketOffersFetchResult:
     own_lot: OwnLot | None = None
     cache_hit: bool = False
     request_payload: dict[str, Any] | None = None
+    response_size_bytes: int | None = None
 
 
 @dataclass(frozen=True)
@@ -524,6 +525,7 @@ class StarvellClient:
             parser_rejected_count=max(len(raw_items) - len(offers), 0),
             own_lot=own_lot,
             request_payload=dict(request_payload),
+            response_size_bytes=len(response.content),
         )
         self._log_empty_market_result(result)
         return result
@@ -554,6 +556,7 @@ class StarvellClient:
             offers=offers,
             subcategory_id=STARVELL_ROBUX_SUBCATEGORY_IDS.get(position_amount),
             parser_rejected_count=max(len(raw_items) - len(offers), 0),
+            response_size_bytes=len(response.content),
         )
         self._log_empty_market_result(result)
         return result

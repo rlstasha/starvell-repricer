@@ -17,11 +17,13 @@ SOCKET_IO_PATH = "socket.io"
 STARVELL_BROWSER_NAMESPACES = (
     "/",
     "/chats",
+    "/orders",
     "/user-notifications",
     "/user-presence",
     "/viewed-offers",
     "/online",
 )
+STARVELL_MARKET_PROBE_NAMESPACES = ("/viewed-offers", "/offers", "/")
 DEFAULT_ORIGIN = "https://starvell.com"
 DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -58,12 +60,23 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Пробовать viewed-offers/join/subscribe payload варианты.",
     )
+    parser.add_argument(
+        "--market-namespaces",
+        action="store_true",
+        help="Дополнительно подключить experimental namespace /offers для market diagnostics.",
+    )
     parser.add_argument("--sid", default="", help="Ручной Engine.IO SID для raw WebSocket fallback")
     parser.add_argument("--duration", type=float, default=60.0, help="Сколько секунд слушать события")
     parser.add_argument("--debug", action="store_true", help="Печатать подробные технические события")
     parser.add_argument("--auth-cookie", default="", help="Cookie для диагностики; значение не печатается")
     parser.add_argument("--origin", default=DEFAULT_ORIGIN, help="Origin header")
     parser.add_argument("--raw", action="store_true", help="Принудительно использовать raw Engine.IO client")
+    parser.add_argument(
+        "--raw-backend",
+        choices=("aiohttp", "websocket-client"),
+        default="aiohttp",
+        help="Raw transport implementation.",
+    )
     parser.add_argument(
         "--no-probes",
         action="store_true",
@@ -134,9 +147,15 @@ async def run_socketio_client(*, socketio: Any, args: argparse.Namespace, header
         print_event(event, namespace="/", payload=sanitize(data[0] if len(data) == 1 else data))
 
     namespaces = namespaces_for_args(args)
-    connect_namespaces = namespaces
+    connect_namespaces = socketio_connect_namespaces(namespaces)
+    if "/offers" in namespaces and "/offers" not in connect_namespaces:
+        print_event(
+            "experimental_namespace_raw_only",
+            namespace="/offers",
+            payload={"reason": "python-socketio fails whole connect when this namespace is rejected"},
+        )
     for namespace in namespaces:
-        if namespace != "/":
+        if namespace != "/" and namespace in connect_namespaces:
             register_namespace_handlers(sio, namespace, connected_namespaces, events_seen)
 
     deadline = time.monotonic() + max(args.duration, 1.0)
@@ -155,7 +174,7 @@ async def run_socketio_client(*, socketio: Any, args: argparse.Namespace, header
             if args.probe_subscriptions and not args.no_probes:
                 await emit_probe_events(
                     sio,
-                    namespaces=probe_namespaces(namespaces),
+                    namespaces=probe_namespaces(connect_namespaces),
                     event=args.event,
                     lot_ids=parse_csv(args.lot_ids),
                     category_ids=parse_csv(args.category_ids),
@@ -222,7 +241,23 @@ async def emit_probe_events(
             category_ids=category_ids,
         ):
             try:
-                await sio.emit(event_name, payload, namespace=target_namespace)
+                def ack_callback(
+                    *ack_data: Any,
+                    namespace: str = target_namespace,
+                    emitted_event: str = event_name,
+                ) -> None:
+                    print_event(
+                        "probe_ack",
+                        namespace=namespace,
+                        payload={"event": emitted_event, "ack": sanitize(ack_data)},
+                    )
+
+                await sio.emit(
+                    event_name,
+                    payload,
+                    namespace=target_namespace,
+                    callback=ack_callback,
+                )
                 print_event(
                     "probe_emit",
                     namespace=target_namespace,
@@ -237,6 +272,9 @@ async def emit_probe_events(
 
 
 async def run_raw_client(*, args: argparse.Namespace, headers: dict[str, str]) -> int:
+    if args.raw_backend == "websocket-client":
+        return await run_websocket_client_raw(args=args, headers=headers)
+
     events_seen: list[str] = []
     connected_namespaces: list[str] = []
     deadline = time.monotonic() + max(args.duration, 1.0)
@@ -274,6 +312,90 @@ async def run_raw_client(*, args: argparse.Namespace, headers: dict[str, str]) -
     return 0
 
 
+async def run_websocket_client_raw(*, args: argparse.Namespace, headers: dict[str, str]) -> int:
+    try:
+        import websocket
+    except ImportError:
+        print("websocket-client is not installed; falling back to raw aiohttp websocket.")
+        return await run_raw_client(args=_replace_raw_backend(args, "aiohttp"), headers=headers)
+
+    events_seen: list[str] = []
+    connected_namespaces: list[str] = []
+    deadline = time.monotonic() + max(args.duration, 1.0)
+    ws_url = f"wss://starvell.com/{SOCKET_IO_PATH}/?EIO=4&transport=websocket"
+    header_list = [
+        f"{key}: {value}"
+        for key, value in headers.items()
+        if value and key.lower() != "origin"
+    ]
+    # websocket-client trace dumps full handshake headers, including Cookie.
+    # Keep it disabled even in debug mode and rely on sanitized frame logs below.
+    websocket.enableTrace(False)
+    ws = await asyncio.to_thread(
+        websocket.create_connection,
+        ws_url,
+        header=header_list,
+        timeout=15,
+        origin=args.origin,
+    )
+    try:
+        print_event("websocket_client_connected", namespace="/", payload={"backend": "websocket-client"})
+        namespaces = namespaces_for_args(args)
+        namespace_connected = False
+        while time.monotonic() < deadline:
+            try:
+                frame = await asyncio.wait_for(asyncio.to_thread(ws.recv), timeout=5)
+            except asyncio.TimeoutError:
+                continue
+            except Exception as exc:
+                print_event(
+                    "websocket_client_closed",
+                    namespace="/",
+                    payload={"reason": _safe_error(exc)},
+                )
+                break
+            if not isinstance(frame, str):
+                print_event("binary_frame", namespace="/", payload=f"{len(frame)} bytes")
+                continue
+            if args.debug:
+                print_event("raw_message", namespace="/", payload=frame)
+            if frame.startswith("0") and not namespace_connected:
+                await handle_engineio_open_frame(frame)
+                await websocket_client_connect_namespaces_and_probe(
+                    ws,
+                    namespaces=namespaces,
+                    event=args.event,
+                    lot_ids=parse_csv(args.lot_ids),
+                    category_ids=parse_csv(args.category_ids),
+                    probe_subscriptions=args.probe_subscriptions,
+                    no_probes=args.no_probes,
+                )
+                namespace_connected = True
+                continue
+            await handle_websocket_client_frame(
+                ws,
+                frame=frame,
+                events_seen=events_seen,
+                connected_namespaces=connected_namespaces,
+            )
+    finally:
+        await asyncio.to_thread(ws.close)
+
+    print_summary(
+        connected=bool(connected_namespaces),
+        connected_namespaces=sorted(set(connected_namespaces)),
+        events_seen=events_seen,
+        expected_event=args.event,
+    )
+    return 0
+
+
+def _replace_raw_backend(args: argparse.Namespace, value: str) -> argparse.Namespace:
+    copied = argparse.Namespace(**vars(args))
+    copied.raw_backend = value
+    return copied
+
+
 async def fetch_engineio_sid(*, headers: dict[str, str]) -> str:
     url = f"{STARVELL_SOCKET_URL}/{SOCKET_IO_PATH}/?EIO=4&transport=polling"
     async with aiohttp.ClientSession(headers=headers) as session:
@@ -301,6 +423,8 @@ async def raw_websocket_loop(
     connected_namespaces: list[str],
 ) -> None:
     namespaces = namespaces_for_args(args)
+    if args.market_namespaces:
+        namespaces = list(dict.fromkeys([*namespaces, *STARVELL_MARKET_PROBE_NAMESPACES]))
     sid_suffix = f"&sid={sid}" if sid else ""
     ws_url = f"wss://starvell.com/{SOCKET_IO_PATH}/?EIO=4&transport=websocket{sid_suffix}"
     async with aiohttp.ClientSession(headers=headers) as session:
@@ -386,6 +510,7 @@ async def raw_connect_namespaces_and_probe(
     for namespace in namespaces:
         await websocket.send_str(make_socketio_connect_frame(namespace))
     if probe_subscriptions and not no_probes:
+        await asyncio.sleep(0.25)
         for namespace in probe_namespaces(namespaces):
             for event_name, payload in probe_payloads(
                 event,
@@ -394,6 +519,35 @@ async def raw_connect_namespaces_and_probe(
             ):
                 frame = make_socketio_event_frame(event_name, payload, namespace=namespace)
                 await websocket.send_str(frame)
+                print_event(
+                    "probe_emit",
+                    namespace=namespace,
+                    payload={"event": event_name, "payload": payload},
+                )
+
+
+async def websocket_client_connect_namespaces_and_probe(
+    websocket: Any,
+    *,
+    namespaces: Sequence[str],
+    event: str,
+    lot_ids: Sequence[str],
+    category_ids: Sequence[str],
+    probe_subscriptions: bool,
+    no_probes: bool,
+) -> None:
+    for namespace in namespaces:
+        await asyncio.to_thread(websocket.send, make_socketio_connect_frame(namespace))
+    if probe_subscriptions and not no_probes:
+        await asyncio.sleep(0.25)
+        for namespace in probe_namespaces(namespaces):
+            for event_name, payload in probe_payloads(
+                event,
+                lot_ids=lot_ids,
+                category_ids=category_ids,
+            ):
+                frame = make_socketio_event_frame(event_name, payload, namespace=namespace)
+                await asyncio.to_thread(websocket.send, frame)
                 print_event(
                     "probe_emit",
                     namespace=namespace,
@@ -443,6 +597,83 @@ async def handle_raw_frame(
             namespace=namespace,
             payload={"raw_payload": payload_text, "parsed": sanitize(payload)},
         )
+        return
+    if frame.startswith("43"):
+        namespace, payload_text = split_socketio_event_frame(frame[2:])
+        try:
+            payload = json.loads(payload_text)
+        except ValueError:
+            payload = payload_text
+        print_event(
+            "socketio_ack",
+            namespace=namespace,
+            payload={"raw_payload": payload_text, "parsed": sanitize(payload)},
+        )
+        return
+    if frame.startswith("44"):
+        namespace, payload = split_socketio_connect_frame(frame[2:])
+        print_event("socketio_error", namespace=namespace, payload=sanitize(payload))
+        return
+    if frame.startswith("41"):
+        namespace = frame[2:] or "/"
+        print_event("namespace_disconnected", namespace=namespace, payload=None)
+        return
+    print_event("engineio_frame", namespace="/", payload=frame)
+
+
+async def handle_websocket_client_frame(
+    websocket: Any,
+    *,
+    frame: str,
+    events_seen: list[str],
+    connected_namespaces: list[str],
+) -> None:
+    if frame == "2":
+        await asyncio.to_thread(websocket.send, "3")
+        print_event("engineio_pong", namespace="/", payload=None)
+        return
+    if frame == "40":
+        connected_namespaces.append("/")
+        print_event("namespace_connected", namespace="/", payload=None)
+        return
+    if frame.startswith("40") and frame != "40":
+        namespace, payload = split_socketio_connect_frame(frame[2:])
+        connected_namespaces.append(namespace)
+        print_event("namespace_connected", namespace=namespace, payload=sanitize(payload))
+        return
+    if frame.startswith("42"):
+        namespace, payload_text = split_socketio_event_frame(frame[2:])
+        try:
+            payload = json.loads(payload_text)
+        except ValueError:
+            payload = payload_text
+        event_name = payload[0] if isinstance(payload, list) and payload else "unknown"
+        events_seen.append(str(event_name))
+        print_event(
+            str(event_name),
+            namespace=namespace,
+            payload={"raw_payload": payload_text, "parsed": sanitize(payload)},
+        )
+        return
+    if frame.startswith("43"):
+        namespace, payload_text = split_socketio_event_frame(frame[2:])
+        try:
+            payload = json.loads(payload_text)
+        except ValueError:
+            payload = payload_text
+        print_event(
+            "socketio_ack",
+            namespace=namespace,
+            payload={"raw_payload": payload_text, "parsed": sanitize(payload)},
+        )
+        return
+    if frame.startswith("44"):
+        namespace, payload = split_socketio_connect_frame(frame[2:])
+        print_event("socketio_error", namespace=namespace, payload=sanitize(payload))
+        return
+    if frame.startswith("41"):
+        namespace = frame[2:] or "/"
+        print_event("namespace_disconnected", namespace=namespace, payload=None)
         return
     print_event("engineio_frame", namespace="/", payload=frame)
 
@@ -495,33 +726,62 @@ def probe_payloads(
     *,
     lot_ids: Sequence[str],
     category_ids: Sequence[str],
-) -> list[tuple[str, dict[str, Any]]]:
+) -> list[tuple[str, Any]]:
     lot_ids = [str(item) for item in lot_ids if str(item)]
     category_ids = [str(item) for item in category_ids if str(item)]
+    lot_id_numbers = [int(item) for item in lot_ids if str(item).isdigit()]
+    category_id_numbers = [int(item) for item in category_ids if str(item).isdigit()]
     return [
         (event, {}),
         (event, {"room": event}),
         ("join", {"room": event}),
+        ("join", event),
+        ("join", "offers"),
         ("subscribe", {"room": event}),
+        ("subscribe", {"room": "offers"}),
         ("subscribe", {"channel": event}),
+        ("subscribe", {"channel": "offers"}),
         ("subscribe", {"lot_ids": lot_ids}),
+        ("subscribe", {"lotIds": lot_id_numbers or lot_ids}),
         ("subscribe", {"offer_ids": lot_ids}),
+        ("subscribe", {"offerIds": lot_id_numbers or lot_ids}),
         ("subscribe", {"category_ids": category_ids}),
+        ("subscribe", {"categoryIds": category_id_numbers or category_ids}),
+        ("subscribe", {"subCategoryIds": category_id_numbers or category_ids}),
+        ("offers", {}),
+        ("offers", {"lotIds": lot_id_numbers or lot_ids}),
+        ("offers", {"subCategoryIds": category_id_numbers or category_ids}),
+        ("watch", {"room": event}),
+        ("watch", {"room": "offers"}),
+        ("watch", {"lotIds": lot_id_numbers or lot_ids}),
+        ("watch", {"offerIds": lot_id_numbers or lot_ids}),
+        ("watch", {"subCategoryIds": category_id_numbers or category_ids}),
+        ("viewed-offers", {"lotIds": lot_id_numbers or lot_ids}),
+        ("viewed-offers", {"offerIds": lot_id_numbers or lot_ids}),
     ]
 
 
 def namespaces_for_args(args: argparse.Namespace) -> list[str]:
     if getattr(args, "all_namespaces", False):
-        return list(STARVELL_BROWSER_NAMESPACES)
-    return [_normalize_namespace(args.namespace)]
+        namespaces = list(STARVELL_BROWSER_NAMESPACES)
+    else:
+        namespaces = [_normalize_namespace(args.namespace)]
+    if getattr(args, "market_namespaces", False):
+        namespaces.extend(STARVELL_MARKET_PROBE_NAMESPACES)
+    return list(dict.fromkeys(namespaces))
 
 
 def probe_namespaces(namespaces: Sequence[str]) -> list[str]:
     normalized = [_normalize_namespace(namespace) for namespace in namespaces]
-    result = [namespace for namespace in normalized if namespace == "/viewed-offers"]
+    result = [namespace for namespace in normalized if namespace in {"/viewed-offers", "/offers"}]
     if "/" in normalized:
         result.append("/")
     return list(dict.fromkeys(result or normalized))
+
+
+def socketio_connect_namespaces(namespaces: Sequence[str]) -> list[str]:
+    normalized = [_normalize_namespace(namespace) for namespace in namespaces]
+    return [namespace for namespace in normalized if namespace != "/offers"]
 
 
 def parse_csv(value: str) -> list[str]:

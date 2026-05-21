@@ -10,6 +10,7 @@ from app.check_starvell_socket import (
     probe_namespaces,
     probe_payloads,
     sanitize,
+    socketio_connect_namespaces,
     split_engineio_packet,
     split_socketio_connect_frame,
     split_socketio_event_frame,
@@ -70,10 +71,21 @@ def test_namespaces_for_all_browser_namespaces() -> None:
     args = parse_args(["--all-namespaces"])
 
     assert namespaces_for_args(args) == list(STARVELL_BROWSER_NAMESPACES)
+    assert "/orders" in namespaces_for_args(args)
+
+
+def test_namespaces_can_include_experimental_offers_namespace() -> None:
+    args = parse_args(["--namespace", "/viewed-offers", "--market-namespaces"])
+
+    assert namespaces_for_args(args) == ["/viewed-offers", "/offers", "/"]
 
 
 def test_probe_namespaces_prefers_viewed_offers_and_default() -> None:
     assert probe_namespaces(["/", "/chats", "/viewed-offers"]) == ["/viewed-offers", "/"]
+
+
+def test_socketio_connect_namespaces_skips_experimental_offers_namespace() -> None:
+    assert socketio_connect_namespaces(["/", "/viewed-offers", "/offers"]) == ["/", "/viewed-offers"]
 
 
 def test_parse_csv_strips_empty_values() -> None:
@@ -89,9 +101,15 @@ def test_probe_payloads_include_viewed_offers_variants() -> None:
 
     assert ("viewed-offers", {}) in payloads
     assert ("join", {"room": "viewed-offers"}) in payloads
+    assert ("join", "offers") in payloads
+    assert ("subscribe", {"room": "offers"}) in payloads
     assert ("subscribe", {"channel": "viewed-offers"}) in payloads
     assert ("subscribe", {"lot_ids": ["1996", "2000"]}) in payloads
+    assert ("subscribe", {"lotIds": [1996, 2000]}) in payloads
     assert ("subscribe", {"offer_ids": ["1996", "2000"]}) in payloads
+    assert ("offers", {}) in payloads
+    assert ("watch", {"room": "offers"}) in payloads
+    assert ("watch", {"subCategoryIds": [65]}) in payloads
     assert ("subscribe", {"category_ids": ["65"]}) in payloads
 
 

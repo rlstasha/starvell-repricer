@@ -206,6 +206,11 @@ class RepricerScheduler:
                 settings=self.settings,
                 starvell_client=starvell_client,
                 dry_run=dry_run,
+                scheduler_delay_ms=round(
+                    (self.schedule_runtime[item.robux_amount].current_interval_seconds * 1000),
+                    2,
+                ),
+                scheduler_delay_reason=self.schedule_runtime[item.robux_amount].delay_reason,
             )
 
             if not await self.position_lock.acquire(item.robux_amount):
