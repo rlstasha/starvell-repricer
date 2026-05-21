@@ -52,6 +52,11 @@ class Settings(BaseSettings):
     price_write_discovery: bool = False
     my_lot_state_cache_ttl_seconds: float = Field(default=10.0, ge=0)
     price_update_context_cache_ttl_seconds: float = Field(default=60.0, ge=0)
+    starvell_socket_enabled: bool = False
+    starvell_socket_namespace: str = "/viewed-offers"
+    starvell_socket_idle_timeout_seconds: float = Field(default=120.0, ge=1)
+    starvell_socket_reconnect_min_seconds: float = Field(default=3.0, ge=1)
+    starvell_socket_reconnect_max_seconds: float = Field(default=30.0, ge=1)
 
     own_seller_id: str | None = None
     own_seller_username: str | None = None
@@ -191,6 +196,14 @@ class Settings(BaseSettings):
             return normalized
         raise ValueError("MARKET_UPDATE_PRICE_CONTENT_TYPE must be json or form")
 
+    @field_validator("starvell_socket_namespace")
+    @classmethod
+    def validate_starvell_socket_namespace(cls, value: str) -> str:
+        namespace = value.strip() or "/"
+        if not namespace.startswith("/"):
+            namespace = f"/{namespace}"
+        return namespace
+
     @field_validator("proxy_fast_1_url", "proxy_fast_2_url", "proxy_slow_url")
     @classmethod
     def validate_proxy_url(cls, value: str) -> str:
@@ -220,6 +233,11 @@ class Settings(BaseSettings):
             raise ValueError("HIGH_PRIORITY_PERCENT and NORMAL_PRIORITY_PERCENT must sum to 100")
         if self.request_min_delay_ms > self.request_max_delay_ms:
             raise ValueError("REQUEST_MIN_DELAY_MS must be <= REQUEST_MAX_DELAY_MS")
+        if self.starvell_socket_reconnect_min_seconds > self.starvell_socket_reconnect_max_seconds:
+            raise ValueError(
+                "STARVELL_SOCKET_RECONNECT_MIN_SECONDS must be <= "
+                "STARVELL_SOCKET_RECONNECT_MAX_SECONDS"
+            )
         if self.account_min_limit_per_minute > self.account_effective_limit_per_minute:
             raise ValueError(
                 "ACCOUNT_MIN_LIMIT_PER_MINUTE must be <= ACCOUNT_EFFECTIVE_LIMIT_PER_MINUTE"

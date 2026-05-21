@@ -8,6 +8,7 @@ from app.core.config import Settings
 from app.db.models import Position, PriceUpdateLog, UpdateStatus, WorkerHeartbeat, WorkerState
 from app.db.repositories import AppSettingsRepository, PositionRepository, WorkerHeartbeatRepository, WorkerStateRepository
 from app.repricer.rate_limiter import RedisAdaptiveTokenBucketRateLimiter, RedisSlidingWindowRateLimiter
+from app.repricer.socket_listener import SocketStatus, load_socket_status
 
 
 @dataclass(frozen=True)
@@ -24,6 +25,7 @@ class TelegramStatusContext:
     error_count: int
     positions_by_amount: dict[int, Position]
     last_position: Position | None
+    socket_status: SocketStatus
 
 
 async def load_telegram_status_context(
@@ -33,6 +35,7 @@ async def load_telegram_status_context(
     redis: Redis,
 ) -> TelegramStatusContext:
     request_usage = await current_request_usage(settings=settings, redis=redis)
+    socket_status = await load_socket_status(redis)
     async with session_factory() as session:
         app_settings = AppSettingsRepository(session)
         positions = PositionRepository(session)
@@ -66,6 +69,7 @@ async def load_telegram_status_context(
         error_count=error_count,
         positions_by_amount=positions_by_amount,
         last_position=last_position,
+        socket_status=socket_status,
     )
 
 

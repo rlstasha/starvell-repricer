@@ -109,6 +109,31 @@ def test_request_pacing_defaults_are_fast_when_proxies_are_healthy() -> None:
     assert settings.price_update_context_cache_ttl_seconds == 60
 
 
+def test_starvell_socket_defaults_to_disabled_optional_mode() -> None:
+    settings = Settings(_env_file=None)
+
+    assert settings.starvell_socket_enabled is False
+    assert settings.starvell_socket_namespace == "/viewed-offers"
+    assert settings.starvell_socket_idle_timeout_seconds == 120
+    assert settings.starvell_socket_reconnect_min_seconds == 3
+    assert settings.starvell_socket_reconnect_max_seconds == 30
+
+
+def test_starvell_socket_namespace_is_normalized() -> None:
+    settings = Settings(_env_file=None, starvell_socket_namespace="viewed-offers")
+
+    assert settings.starvell_socket_namespace == "/viewed-offers"
+
+
+def test_starvell_socket_reconnect_range_is_validated() -> None:
+    with pytest.raises(ValueError):
+        Settings(
+            _env_file=None,
+            starvell_socket_reconnect_min_seconds=30,
+            starvell_socket_reconnect_max_seconds=3,
+        )
+
+
 def test_price_write_settings_default_to_safe_analysis_mode() -> None:
     settings = Settings(
         _env_file=None,

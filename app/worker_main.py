@@ -8,6 +8,7 @@ from app.core.network import mask_proxy_url, resolve_public_ip
 from app.db.repositories import AppSettingsRepository, PositionRepository
 from app.db.session import create_session_factory
 from app.repricer.scheduler import RepricerScheduler
+from app.repricer.socket_listener import StarvellSocketListener
 from app.repricer.worker_groups import ALL_WORKER_GROUPS, WORKER_GROUP_ALL
 
 logger = get_logger(__name__)
@@ -51,6 +52,13 @@ async def _run_proxy_profile_workers(settings, session_factory, redis: Redis) ->
         proxy_profiles=list(ALL_WORKER_GROUPS),
     )
     tasks = []
+    if settings.starvell_socket_enabled:
+        tasks.append(
+            asyncio.create_task(
+                StarvellSocketListener(settings=settings, redis=redis).run_forever(),
+                name="starvell-socket-listener",
+            )
+        )
     for group in ALL_WORKER_GROUPS:
         group_settings = settings.model_copy(update={"worker_group": group})
         tasks.append(
@@ -84,7 +92,15 @@ async def _run_single_worker(settings, session_factory, redis: Redis) -> None:
         redis=redis,
         public_ip=public_ip,
     )
-    await scheduler.run_forever()
+    if not settings.starvell_socket_enabled:
+        await scheduler.run_forever()
+        return
+
+    listener = StarvellSocketListener(settings=settings, redis=redis)
+    await asyncio.gather(
+        asyncio.create_task(listener.run_forever(), name="starvell-socket-listener"),
+        asyncio.create_task(scheduler.run_forever(), name=f"repricer-{settings.worker_group}"),
+    )
 
 
 if __name__ == "__main__":

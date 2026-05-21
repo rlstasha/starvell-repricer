@@ -19,6 +19,7 @@ from app.repricer.adaptive_scheduler import (
     timing_for_group,
     timing_for_position,
 )
+from app.repricer.socket_listener import SocketStatus
 from app.repricer.worker_groups import WorkerGroupInfo
 
 
@@ -716,6 +717,7 @@ def format_technical_status(
     global_limit: int,
     recent_errors: list[tuple[PriceUpdateLog, Position | None]],
     group_infos: list[WorkerGroupInfo] | None = None,
+    socket_status: SocketStatus | None = None,
 ) -> str:
     current_groups = {info.name for info in (group_infos or [])}
     lines = [
@@ -728,6 +730,9 @@ def format_technical_status(
                 f"global_limit={global_limit}",
             ]
         ),
+        "",
+        "WebSocket:",
+        *_quote_lines(_socket_status_lines(socket_status)),
         "",
         "Heartbeats:",
     ]
@@ -779,6 +784,26 @@ def format_technical_status(
         amount = position.robux_amount if position else log.position_id
         lines.extend(_quote_lines([f"{dt(log.created_at)} position={amount} raw_reason={log.reason or '—'}"]))
     return "\n".join(lines)
+
+
+def _socket_status_lines(socket_status: SocketStatus | None) -> list[str]:
+    if socket_status is None:
+        return [
+            "enabled=False",
+            "connected=False",
+            "fallback_active=True",
+            "namespace=—",
+        ]
+    return [
+        f"enabled={socket_status.enabled}",
+        f"connected={socket_status.connected}",
+        f"namespace={socket_status.namespace}",
+        f"last_event_at={dt(socket_status.last_event_at)}",
+        f"events_seen={socket_status.events_seen}",
+        f"fallback_active={socket_status.fallback_active}",
+        f"last_error={socket_status.last_error or '—'}",
+        f"updated_at={dt(socket_status.updated_at)}",
+    ]
 
 
 def format_status(

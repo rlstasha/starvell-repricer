@@ -43,6 +43,7 @@ from app.repricer.rate_limiter import (
     adaptive_backoff_seconds,
     transport_backoff_seconds,
 )
+from app.repricer.socket_listener import socket_amount_signal_key, socket_lot_signal_key
 from app.repricer.worker_groups import (
     WORKER_GROUP_ALL,
     WORKER_GROUP_FAST_1,
@@ -324,6 +325,7 @@ class RepricerScheduler:
 
         for amount in set(self.schedule_runtime) - active_amounts:
             self.schedule_runtime.pop(amount, None)
+        await self._apply_realtime_signals(positions)
         self._rebuild_schedule_heap()
 
     def _rebuild_schedule_heap(self) -> None:
@@ -354,8 +356,56 @@ class RepricerScheduler:
             if state is None or state.next_run_monotonic != next_run:
                 heapq.heappop(self.schedule_heap)
                 continue
-            return max(min(next_run - time.monotonic(), self.settings.scheduler_idle_sleep_seconds), 0.1)
+            wait = max(min(next_run - time.monotonic(), self.settings.scheduler_idle_sleep_seconds), 0.1)
+            if self.settings.starvell_socket_enabled:
+                return min(wait, 0.25)
+            return wait
         return self.settings.scheduler_idle_sleep_seconds
+
+    async def _apply_realtime_signals(self, positions: list[Position]) -> None:
+        if not self.settings.starvell_socket_enabled:
+            return
+
+        now = time.monotonic()
+        for position in positions:
+            state = self.schedule_runtime.get(position.robux_amount)
+            if state is None:
+                continue
+            signal_keys: list[str] = [socket_amount_signal_key(position.robux_amount)]
+            if position.lot_id:
+                signal_keys.append(socket_lot_signal_key(position.lot_id))
+            consumed_keys = [
+                key
+                for key in signal_keys
+                if await self._consume_realtime_signal(key)
+            ]
+            if not consumed_keys:
+                continue
+            state.next_run_monotonic = min(state.next_run_monotonic, now)
+            state.delay_reason = "socket_event"
+            self.logger.info(
+                "starvell_socket_refresh_scheduled",
+                worker_group=self.settings.worker_group,
+                position_amount=position.robux_amount,
+                lot_id=position.lot_id,
+                signal_keys=consumed_keys,
+            )
+
+    async def _consume_realtime_signal(self, key: str) -> bool:
+        try:
+            value = await self.redis.get(key)
+            if not value:
+                return False
+            await self.redis.delete(key)
+            return True
+        except Exception as exc:
+            self.logger.warning(
+                "starvell_socket_signal_read_failed",
+                worker_group=self.settings.worker_group,
+                key=key,
+                error=str(exc),
+            )
+            return False
 
     def _postpone_locked_position(self, amount: int) -> None:
         state = self.schedule_runtime.get(amount)

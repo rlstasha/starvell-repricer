@@ -36,6 +36,7 @@ from app.db.models import (
     WorkerHeartbeat,
     WorkerState,
 )
+from app.repricer.socket_listener import SocketStatus
 
 
 def _position(amount: int, lot_id: str | None = None) -> Position:
@@ -543,6 +544,37 @@ def test_technical_status_marks_legacy_records() -> None:
     assert "worker_group=all" in text
     assert "name=repricer" in text
     assert text.count("record_status=устаревшая запись") == 2
+
+
+def test_technical_status_includes_websocket_state() -> None:
+    settings = Settings(_env_file=None)
+    socket_status = SocketStatus(
+        enabled=True,
+        connected=True,
+        namespace="/viewed-offers",
+        last_event_at=datetime(2026, 5, 21, 0, 0, tzinfo=UTC),
+        events_seen=3,
+        fallback_active=False,
+        last_error=None,
+        updated_at=datetime(2026, 5, 21, 0, 1, tzinfo=UTC),
+    )
+
+    text = format_technical_status(
+        worker_states=[],
+        heartbeats=[],
+        request_usage=0,
+        global_limit=settings.global_request_limit_per_minute,
+        recent_errors=[],
+        group_infos=settings.worker_group_infos,
+        socket_status=socket_status,
+    )
+
+    assert "WebSocket:" in text
+    assert "enabled=True" in text
+    assert "connected=True" in text
+    assert "namespace=/viewed-offers" in text
+    assert "events_seen=3" in text
+    assert "fallback_active=False" in text
 
 
 def test_limits_screen_shows_effective_limit_backoff_and_last_429() -> None:

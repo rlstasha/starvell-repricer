@@ -311,6 +311,7 @@ async def show_technical_status(
             global_limit=settings.global_request_limit_per_minute,
             recent_errors=status_context.recent_errors,
             group_infos=settings.worker_group_infos,
+            socket_status=status_context.socket_status,
         ),
         reply_markup=back_to_misc_keyboard(),
     )
