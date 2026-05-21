@@ -1,7 +1,14 @@
 import json
 
 from app.check_starvell_socket import (
+    STARVELL_BROWSER_NAMESPACES,
     make_socketio_event_frame,
+    make_socketio_connect_frame,
+    namespaces_for_args,
+    parse_args,
+    parse_csv,
+    probe_namespaces,
+    probe_payloads,
     sanitize,
     split_engineio_packet,
     split_socketio_connect_frame,
@@ -49,6 +56,43 @@ def test_make_socketio_event_frame_for_custom_namespace() -> None:
         {"room": "viewed-offers"},
         namespace="/viewed-offers",
     ) == '42/viewed-offers,["viewed-offers",{"room":"viewed-offers"}]'
+
+
+def test_make_socketio_connect_frame_for_default_namespace() -> None:
+    assert make_socketio_connect_frame("/") == "40"
+
+
+def test_make_socketio_connect_frame_for_custom_namespace() -> None:
+    assert make_socketio_connect_frame("/viewed-offers") == "40/viewed-offers,"
+
+
+def test_namespaces_for_all_browser_namespaces() -> None:
+    args = parse_args(["--all-namespaces"])
+
+    assert namespaces_for_args(args) == list(STARVELL_BROWSER_NAMESPACES)
+
+
+def test_probe_namespaces_prefers_viewed_offers_and_default() -> None:
+    assert probe_namespaces(["/", "/chats", "/viewed-offers"]) == ["/viewed-offers", "/"]
+
+
+def test_parse_csv_strips_empty_values() -> None:
+    assert parse_csv("1996, 1998,,2000 ") == ["1996", "1998", "2000"]
+
+
+def test_probe_payloads_include_viewed_offers_variants() -> None:
+    payloads = probe_payloads(
+        "viewed-offers",
+        lot_ids=["1996", "2000"],
+        category_ids=["65"],
+    )
+
+    assert ("viewed-offers", {}) in payloads
+    assert ("join", {"room": "viewed-offers"}) in payloads
+    assert ("subscribe", {"channel": "viewed-offers"}) in payloads
+    assert ("subscribe", {"lot_ids": ["1996", "2000"]}) in payloads
+    assert ("subscribe", {"offer_ids": ["1996", "2000"]}) in payloads
+    assert ("subscribe", {"category_ids": ["65"]}) in payloads
 
 
 def test_sanitize_hides_secret_fields() -> None:
