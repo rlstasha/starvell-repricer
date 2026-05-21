@@ -2,6 +2,7 @@ import asyncio
 import json
 import random
 import re
+from contextlib import suppress
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -186,20 +187,20 @@ class StarvellSocketListener:
             payload = data[0] if len(data) == 1 else data
             await self._handle_event(event, payload)
 
-        await sio.connect(
-            self.settings.market_base_url.rstrip("/"),
-            headers=self._headers(),
-            transports=["websocket"],
-            socketio_path="socket.io",
-            namespaces=[self.namespace],
-            wait_timeout=15,
-        )
         try:
+            await sio.connect(
+                self.settings.market_base_url.rstrip("/"),
+                headers=self._headers(),
+                transports=["websocket"],
+                socketio_path="socket.io",
+                namespaces=[self.namespace],
+                wait_timeout=15,
+            )
             while sio.connected:
                 await self._check_idle()
                 await asyncio.sleep(5)
         finally:
-            if sio.connected:
+            with suppress(Exception):
                 await sio.disconnect()
 
     async def _handle_event(self, event: str, payload: Any) -> None:
