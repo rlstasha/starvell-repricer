@@ -105,6 +105,9 @@ def test_request_pacing_defaults_are_safe_without_group_overrides() -> None:
     assert settings.scheduler_idle_sleep_for_group("fast_1") == 0.1
     assert settings.scheduler_idle_sleep_for_group("fast_2") == 0.1
     assert settings.scheduler_idle_sleep_for_group("slow") == 1.0
+    assert settings.ultra_fast_min_interval_seconds == 0.8
+    assert settings.fast1_min_interval_seconds == 1.5
+    assert settings.fast2_min_interval_seconds == 2.0
 
 
 def test_request_pacing_can_be_overridden_per_worker_group() -> None:

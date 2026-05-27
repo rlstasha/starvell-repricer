@@ -92,6 +92,8 @@ def timing_for_group(worker_group: str) -> ProfileTiming:
     timing = PROFILE_TIMINGS.get(worker_group, DEFAULT_TIMING)
     if worker_group == WORKER_GROUP_FAST_1:
         return _with_min_interval_override(timing, "FAST1_MIN_INTERVAL_SECONDS")
+    if worker_group == WORKER_GROUP_FAST_2:
+        return _with_min_interval_override(timing, "FAST2_MIN_INTERVAL_SECONDS")
     return timing
 
 
@@ -226,8 +228,8 @@ def _clamp(value: float, min_value: float, max_value: float) -> float:
 
 
 def _with_min_interval_override(timing: ProfileTiming, env_name: str) -> ProfileTiming:
-    raw_value = os.getenv(env_name)
-    if raw_value is None or raw_value.strip() == "":
+    raw_value = _interval_override_value(env_name)
+    if raw_value is None:
         return timing
     try:
         min_seconds = float(raw_value)
@@ -243,3 +245,22 @@ def _with_min_interval_override(timing: ProfileTiming, env_name: str) -> Profile
         backoff_min_seconds=timing.backoff_min_seconds,
         backoff_max_seconds=timing.backoff_max_seconds,
     )
+
+
+def _interval_override_value(env_name: str) -> str | float | None:
+    raw_value = os.getenv(env_name)
+    if raw_value is not None and raw_value.strip() != "":
+        return raw_value
+    settings_field = {
+        "ULTRA_FAST_MIN_INTERVAL_SECONDS": "ultra_fast_min_interval_seconds",
+        "FAST1_MIN_INTERVAL_SECONDS": "fast1_min_interval_seconds",
+        "FAST2_MIN_INTERVAL_SECONDS": "fast2_min_interval_seconds",
+    }.get(env_name)
+    if settings_field is None:
+        return None
+    try:
+        from app.core.config import get_settings
+
+        return getattr(get_settings(), settings_field)
+    except Exception:
+        return None

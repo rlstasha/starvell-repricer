@@ -120,6 +120,9 @@ class Settings(BaseSettings):
     fast2_idle_sleep_seconds: float = Field(default=0.1, ge=0.01)
     slow_idle_sleep_seconds: float = Field(default=1.0, ge=0.01)
     scheduler_max_concurrent_positions: int = Field(default=1, ge=1, le=10)
+    ultra_fast_min_interval_seconds: float = Field(default=0.8, ge=0.01)
+    fast1_min_interval_seconds: float = Field(default=1.5, ge=0.01)
+    fast2_min_interval_seconds: float = Field(default=2.0, ge=0.01)
 
     @field_validator("owner_telegram_ids")
     @classmethod
