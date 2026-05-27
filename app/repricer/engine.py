@@ -95,24 +95,37 @@ class RepricerEngine:
                 position.state.last_seen_competitor_price if position.state else None,
             )
 
-        parallel_fetch_enabled = True
-        market_task = asyncio.create_task(
-            self._timed_market_fetch(position.robux_amount, position.lot_id)
-        )
-        own_lot_task = asyncio.create_task(
-            self._timed_my_lot_fetch(position.robux_amount, position.lot_id)
-        )
-        try:
-            (market_result, market_request_ms), (own_lot, my_lot_request_ms) = await asyncio.gather(
-                market_task,
-                own_lot_task,
+        parallel_fetch_enabled = self.starvell_client.has_fresh_own_lot_cache(position.lot_id)
+        if parallel_fetch_enabled:
+            market_task = asyncio.create_task(
+                self._timed_market_fetch(position.robux_amount, position.lot_id)
             )
-        except Exception:
-            for task in (market_task, own_lot_task):
-                if not task.done():
-                    task.cancel()
-            await asyncio.gather(market_task, own_lot_task, return_exceptions=True)
-            raise
+            own_lot_task = asyncio.create_task(
+                self._timed_my_lot_fetch(position.robux_amount, position.lot_id)
+            )
+            try:
+                (market_result, market_request_ms), (
+                    own_lot,
+                    my_lot_request_ms,
+                ) = await asyncio.gather(
+                    market_task,
+                    own_lot_task,
+                )
+            except Exception:
+                for task in (market_task, own_lot_task):
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(market_task, own_lot_task, return_exceptions=True)
+                raise
+        else:
+            market_result, market_request_ms = await self._timed_market_fetch(
+                position.robux_amount,
+                position.lot_id,
+            )
+            own_lot, my_lot_request_ms = await self._timed_my_lot_fetch(
+                position.robux_amount,
+                position.lot_id,
+            )
         offers = market_result.offers
         current_price = self._current_price(position, own_lot)
 

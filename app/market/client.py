@@ -583,6 +583,21 @@ class StarvellClient:
         )
         return own_lot
 
+    def has_fresh_own_lot_cache(self, lot_id: str | None) -> bool:
+        if not lot_id:
+            return False
+        ttl = self.settings.my_lot_state_cache_ttl_seconds
+        if ttl <= 0:
+            return False
+        cached = self._own_lot_cache.get(str(lot_id))
+        if cached is None:
+            return False
+        cached_at, _ = cached
+        if time.monotonic() - cached_at > ttl:
+            self._own_lot_cache.pop(str(lot_id), None)
+            return False
+        return True
+
     def _remember_own_lot(self, own_lot: OwnLot) -> None:
         if self.settings.my_lot_state_cache_ttl_seconds <= 0 or not own_lot.lot_id:
             return
