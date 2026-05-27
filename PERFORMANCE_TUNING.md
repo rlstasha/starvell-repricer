@@ -76,3 +76,73 @@ Notes:
 - `ultra=0.3` with a lower fast1 delay did not improve useful throughput: updates dropped and skipped increased.
 - `concurrency=2` improved raw throughput and updates but exceeded the account/profile safety envelope. Do not use it without a stricter predictive limiter.
 - Stable 500R reaction under `0.5s` was not reached safely. Individual hot-cache cycles can be sub-second, but p95 is dominated by market latency and price-update context/write latency.
+
+## Graduated account-limit probe
+
+Date: 2026-05-27
+
+Goal: find whether `GLOBAL_REQUEST_LIMIT_PER_MINUTE=300` is only an artificial ceiling.
+Each step uses temporary overrides and stops when 429, limiter waits, write failures, proxy errors,
+or falling useful throughput appears.
+
+| Step | GLOBAL/ACCOUNT | concurrency | ultra | fast1 delay | TTL | 429 | max req/60s | updated/min | skipped/min | wait count | backoff 429 | useful/100 req | verdict |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 350 | 350 | 2 | 0.4 | 200ms | 10s | 0 | 385 | 59.9 | 73.1 | 1578 | 0 | 17.51 | stop: limiter is already waiting |
+
+Result:
+
+```text
+real_safe_ceiling: keep GLOBAL/ACCOUNT at 300 for now
+reason: first graduated step had no 429, but limiter waits were high and profile windows exceeded 100/min
+next higher steps tested: no, stopped by safety rule
+```
+
+The `350` step did not prove Starvell rejects 350/min, but it did prove the current worker shape
+cannot use it cleanly: the limiter starts pacing heavily and profile windows go above the intended
+per-proxy envelope. Raising the global/account limit without a better predictive limiter is not safe.
+
+## Own-lot cache TTL probe
+
+Date: 2026-05-27
+
+Temporary override:
+
+```env
+GLOBAL_REQUEST_LIMIT_PER_MINUTE=300
+ACCOUNT_EFFECTIVE_LIMIT_PER_MINUTE=300
+SCHEDULER_MAX_CONCURRENT_POSITIONS=1
+ULTRA_FAST_MIN_INTERVAL_SECONDS=0.4
+FAST1_MIN_INTERVAL_SECONDS=0.8
+FAST1_MIN_DELAY_MS=200
+FAST1_JITTER_MS=100
+MY_LOT_STATE_CACHE_TTL_SECONDS=30
+```
+
+5-minute result:
+
+```text
+429 count: 0
+rate_limiter_wait_count: 0
+price_update_failed_count: 0
+max requests/60s: 295
+requests/min: 268.0
+price_updated/min: 52.0
+skipped/min: 56.9
+useful_updates_per_100_requests: 19.42
+500R cycle_total_ms avg/p95: 514 / 1919 ms
+parallel_fetch true: 91.7%
+500R parallel_fetch true: 94.1%
+500R false reasons: cache_empty=1, cache_expired=6
+own_lot_cache_hit: 92.1%
+```
+
+Recommendation:
+
+```text
+best useful candidate: keep GLOBAL/ACCOUNT=300, concurrency=1, fast1 delay=200ms, ultra=0.4, own-lot TTL=30s
+do not make it default without confirmation
+```
+
+Why: TTL 30 raises `parallel_fetch=true` from the previous 62-74% range to 90%+ without increasing
+global/account limits or causing 429. This improves useful work per request more safely than raising
+the global limit.
