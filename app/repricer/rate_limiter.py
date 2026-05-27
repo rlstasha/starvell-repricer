@@ -9,9 +9,12 @@ from typing import Mapping, Protocol
 
 from redis.asyncio import Redis
 
+from app.core.logging import get_logger
+
 
 ADAPTIVE_BACKOFF_SECONDS = (1.0, 2.0, 4.0, 8.0, 15.0)
 TRANSPORT_BACKOFF_SECONDS = (0.2, 0.5, 1.0, 2.0, 3.0)
+logger = get_logger(__name__)
 TOKEN_BUCKET_SCRIPT = """
 local bucket_key = KEYS[1]
 local now = tonumber(ARGV[1])
@@ -121,7 +124,14 @@ class RedisFixedWindowRateLimiter:
 
     async def acquire(self, cost: int = 1) -> None:
         while not await self.try_acquire(cost):
-            await asyncio.sleep(max(self._seconds_until_next_window(), 0.05))
+            wait_seconds = max(self._seconds_until_next_window(), 0.05)
+            logger.info(
+                "rate_limiter_wait",
+                limiter="fixed_window",
+                key_prefix=self.key_prefix,
+                wait_ms=round(wait_seconds * 1000, 2),
+            )
+            await asyncio.sleep(wait_seconds)
 
     async def current_usage(self) -> int:
         value = await self.redis.get(self._window_key())
@@ -176,6 +186,13 @@ class RedisTokenBucketRateLimiter:
 
     async def acquire(self, cost: int = 1) -> None:
         while not await self.try_acquire(cost):
+            logger.info(
+                "rate_limiter_wait",
+                limiter="token_bucket",
+                key_prefix=self.key_prefix,
+                limit_per_minute=self.limit,
+                wait_ms=round(self._last_wait_seconds * 1000, 2),
+            )
             await self.sleeper(self._last_wait_seconds)
 
     async def current_usage(self) -> int:
@@ -245,6 +262,15 @@ class RedisAdaptiveTokenBucketRateLimiter:
 
     async def acquire(self, cost: int = 1) -> None:
         while not await self.try_acquire(cost):
+            snapshot = await self.snapshot()
+            logger.info(
+                "rate_limiter_wait",
+                limiter="account_token_bucket",
+                key_prefix=self.key_prefix,
+                configured_limit_per_minute=snapshot.configured_limit_per_minute,
+                effective_limit_per_minute=snapshot.effective_limit_per_minute,
+                wait_ms=round(self._last_wait_seconds * 1000, 2),
+            )
             await self.sleeper(self._last_wait_seconds)
 
     async def current_usage(self) -> int:
