@@ -2,7 +2,7 @@ import pytest
 
 from app.core.config import Settings
 from app.db.models import Position
-from app.repricer.scheduler import RAMP_UP_IDLE_SECONDS, RepricerScheduler
+from app.repricer.scheduler import RAMP_UP_IDLE_SECONDS, RepricerScheduler, RuntimeScheduleState
 
 
 def test_worker_scheduler_filters_fast_2_positions_only() -> None:
@@ -24,6 +24,64 @@ def test_worker_scheduler_filters_fast_2_positions_only() -> None:
     filtered = scheduler._filter_assigned_positions(positions)
 
     assert [position.robux_amount for position in filtered] == [400, 1200, 1700, 2000]
+
+
+def test_worker_scheduler_collects_due_positions_with_concurrency_limit() -> None:
+    settings = Settings(_env_file=None, worker_group="fast_1", scheduler_max_concurrent_positions=2)
+    scheduler = RepricerScheduler(
+        settings=settings,
+        session_factory=object(),
+        redis=object(),
+    )
+    scheduler.schedule_runtime = {
+        500: RuntimeScheduleState(
+            position_amount=500,
+            lot_id="2000",
+            proxy_profile="fast_1",
+            base_interval_seconds=1.0,
+            current_interval_seconds=1.0,
+            next_run_monotonic=1.0,
+            last_checked_at=None,
+            last_competitor_price=None,
+            last_own_price=None,
+        ),
+        800: RuntimeScheduleState(
+            position_amount=800,
+            lot_id="2002",
+            proxy_profile="fast_1",
+            base_interval_seconds=1.0,
+            current_interval_seconds=1.0,
+            next_run_monotonic=1.0,
+            last_checked_at=None,
+            last_competitor_price=None,
+            last_own_price=None,
+        ),
+        1000: RuntimeScheduleState(
+            position_amount=1000,
+            lot_id="2003",
+            proxy_profile="fast_1",
+            base_interval_seconds=1.0,
+            current_interval_seconds=1.0,
+            next_run_monotonic=1.0,
+            last_checked_at=None,
+            last_competitor_price=None,
+            last_own_price=None,
+        ),
+    }
+    scheduler._rebuild_schedule_heap()
+
+    due = scheduler._due_positions(
+        {
+            500: Position(robux_amount=500),
+            800: Position(robux_amount=800),
+            1000: Position(robux_amount=1000),
+        },
+        limit=settings.scheduler_max_concurrent_positions,
+    )
+
+    assert len(due) == 2
+    assert {position.robux_amount for position in due} <= {500, 800, 1000}
+    assert len(scheduler.schedule_heap) == 1
 
 
 @pytest.mark.asyncio

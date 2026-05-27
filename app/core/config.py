@@ -104,6 +104,7 @@ class Settings(BaseSettings):
     high_priority_percent: int = Field(default=70, ge=0, le=100)
     normal_priority_percent: int = Field(default=30, ge=0, le=100)
     scheduler_idle_sleep_seconds: float = Field(default=1.0, ge=0.1)
+    scheduler_max_concurrent_positions: int = Field(default=2, ge=1, le=10)
 
     @field_validator("owner_telegram_ids")
     @classmethod

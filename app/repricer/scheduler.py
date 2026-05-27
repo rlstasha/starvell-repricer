@@ -186,8 +186,11 @@ class RepricerScheduler:
 
             await self._sync_schedule(positions, session)
             positions_by_amount = {position.robux_amount: position for position in positions}
-            item = self._next_due_position(positions_by_amount)
-            if item is None:
+            due_positions = self._due_positions(
+                positions_by_amount,
+                limit=self.settings.scheduler_max_concurrent_positions,
+            )
+            if not due_positions:
                 await self._write_heartbeat(
                     session,
                     status="waiting",
@@ -201,68 +204,41 @@ class RepricerScheduler:
                 "dry_run",
                 default=self.settings.dry_run,
             )
-            engine = RepricerEngine(
-                session=session,
-                settings=self.settings,
-                starvell_client=starvell_client,
-                dry_run=dry_run,
-            )
-
-            if not await self.position_lock.acquire(item.robux_amount):
-                self.logger.info(
-                    "repricer_position_lock_busy",
-                    worker_group=self.settings.worker_group,
-                    position_amount=item.robux_amount,
-                )
-                self._postpone_locked_position(item.robux_amount)
-                await self._write_heartbeat(session, status="lock_busy", dry_run=dry_run)
-                await session.commit()
-                await asyncio.sleep(0.2)
-                return
-
-            try:
-                result = await engine.process_position(item.robux_amount)
-            finally:
-                await self.position_lock.release(item.robux_amount)
-
-            schedule_state = self._update_schedule_after_result(item, result)
-            await PositionScheduleStateRepository(session).upsert(
-                position=item,
-                proxy_profile=self.settings.worker_group,
-                base_interval_seconds=schedule_state.base_interval_seconds,
-                current_interval_seconds=schedule_state.current_interval_seconds,
-                last_checked_at=schedule_state.last_checked_at,
-                last_competitor_price=schedule_state.last_competitor_price,
-                last_own_price=schedule_state.last_own_price,
-                change_score=schedule_state.change_score,
-                error_score=schedule_state.error_score,
-                last_429_at=schedule_state.last_429_at,
-            )
-            await WorkerStateRepository(session).mark_cycle(
-                name=self._worker_state_name(),
-                position_amount=result.position_amount,
-                status=result.status,
-                error=result.reason if result.status == "failed" else None,
-            )
-            await self._update_error_state(result.status, result.reason)
-            await self._write_heartbeat(
-                session,
-                status=self._heartbeat_status(result.status),
-                dry_run=dry_run,
-            )
             await session.commit()
-            self.logger.info(
-                "repricer_position_processed",
-                worker_group=self.settings.worker_group,
-                proxy_profile=self.settings.worker_group,
-                position_amount=result.position_amount,
-                status=result.status,
-                reason=result.reason,
-                old_price=str(result.old_price),
-                new_price=str(result.new_price),
-                competitor_price=str(result.competitor_price),
-            )
-            return
+
+        self.logger.info(
+            "repricer_due_positions_selected",
+            worker_group=self.settings.worker_group,
+            count=len(due_positions),
+            positions=[position.robux_amount for position in due_positions],
+            max_concurrent_positions=self.settings.scheduler_max_concurrent_positions,
+        )
+        semaphore = asyncio.Semaphore(self.settings.scheduler_max_concurrent_positions)
+
+        async def run_position(position: Position):
+            async with semaphore:
+                return await self._process_due_position(position, starvell_client, dry_run)
+
+        results = await asyncio.gather(
+            *(run_position(position) for position in due_positions),
+            return_exceptions=True,
+        )
+        processed_count = 0
+        for result in results:
+            if isinstance(result, Exception):
+                await self._mark_error(result)
+                self.logger.error(
+                    "repricer_due_position_task_failed",
+                    worker_group=self.settings.worker_group,
+                    error=safe_starvell_error_reason(result),
+                    error_type=type(result).__name__,
+                )
+                continue
+            if result is not None:
+                processed_count += 1
+        if processed_count == 0:
+            await asyncio.sleep(0.2)
+        return
 
     async def _sync_schedule(self, positions: list[Position], session: AsyncSession) -> None:
         repository = PositionScheduleStateRepository(session)
@@ -343,6 +319,95 @@ class RepricerScheduler:
             heapq.heappop(self.schedule_heap)
             return positions_by_amount.get(amount)
         return None
+
+    def _due_positions(self, positions_by_amount: dict[int, Position], *, limit: int) -> list[Position]:
+        # A future per-position task model would remove the heap bottleneck entirely,
+        # but it needs separate lifecycle/backoff supervision. This keeps the heap
+        # scheduler and only processes currently due positions with bounded fan-out.
+        now = time.monotonic()
+        due: list[Position] = []
+        normalized_limit = max(int(limit), 1)
+        while self.schedule_heap and len(due) < normalized_limit:
+            next_run, _, amount = self.schedule_heap[0]
+            state = self.schedule_runtime.get(amount)
+            if state is None or state.next_run_monotonic != next_run:
+                heapq.heappop(self.schedule_heap)
+                continue
+            if next_run > now:
+                break
+            heapq.heappop(self.schedule_heap)
+            position = positions_by_amount.get(amount)
+            if position is not None:
+                due.append(position)
+        return due
+
+    async def _process_due_position(
+        self,
+        position: Position,
+        starvell_client: StarvellClient,
+        dry_run: bool,
+    ):
+        async with self.session_factory() as session:
+            if not await self.position_lock.acquire(position.robux_amount):
+                self.logger.info(
+                    "repricer_position_lock_busy",
+                    worker_group=self.settings.worker_group,
+                    position_amount=position.robux_amount,
+                )
+                self._postpone_locked_position(position.robux_amount)
+                await self._write_heartbeat(session, status="lock_busy", dry_run=dry_run)
+                await session.commit()
+                return None
+
+            engine = RepricerEngine(
+                session=session,
+                settings=self.settings,
+                starvell_client=starvell_client,
+                dry_run=dry_run,
+            )
+            try:
+                result = await engine.process_position(position.robux_amount)
+            finally:
+                await self.position_lock.release(position.robux_amount)
+
+            schedule_state = self._update_schedule_after_result(position, result)
+            await PositionScheduleStateRepository(session).upsert(
+                position=position,
+                proxy_profile=self.settings.worker_group,
+                base_interval_seconds=schedule_state.base_interval_seconds,
+                current_interval_seconds=schedule_state.current_interval_seconds,
+                last_checked_at=schedule_state.last_checked_at,
+                last_competitor_price=schedule_state.last_competitor_price,
+                last_own_price=schedule_state.last_own_price,
+                change_score=schedule_state.change_score,
+                error_score=schedule_state.error_score,
+                last_429_at=schedule_state.last_429_at,
+            )
+            await WorkerStateRepository(session).mark_cycle(
+                name=self._worker_state_name(),
+                position_amount=result.position_amount,
+                status=result.status,
+                error=result.reason if result.status == "failed" else None,
+            )
+            await self._update_error_state(result.status, result.reason)
+            await self._write_heartbeat(
+                session,
+                status=self._heartbeat_status(result.status),
+                dry_run=dry_run,
+            )
+            await session.commit()
+            self.logger.info(
+                "repricer_position_processed",
+                worker_group=self.settings.worker_group,
+                proxy_profile=self.settings.worker_group,
+                position_amount=result.position_amount,
+                status=result.status,
+                reason=result.reason,
+                old_price=str(result.old_price),
+                new_price=str(result.new_price),
+                competitor_price=str(result.competitor_price),
+            )
+            return result
 
     def _next_schedule_wait_seconds(self) -> float:
         while self.schedule_heap:
