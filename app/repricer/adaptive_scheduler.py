@@ -37,6 +37,7 @@ ACTIVE_STRATEGY_REASONS = frozenset(
     }
 )
 ACTIVE_STRATEGY_CHANGE_SCORE_FLOOR = 0.65
+_interval_override_cache: dict[str, float | None] = {}
 
 PROFILE_TIMINGS = {
     WORKER_GROUP_FAST_1: ProfileTiming(
@@ -228,12 +229,8 @@ def _clamp(value: float, min_value: float, max_value: float) -> float:
 
 
 def _with_min_interval_override(timing: ProfileTiming, env_name: str) -> ProfileTiming:
-    raw_value = _interval_override_value(env_name)
-    if raw_value is None:
-        return timing
-    try:
-        min_seconds = float(raw_value)
-    except ValueError:
+    min_seconds = _interval_override_value(env_name)
+    if min_seconds is None:
         return timing
     min_seconds = max(min_seconds, 0.01)
     return ProfileTiming(
@@ -247,10 +244,23 @@ def _with_min_interval_override(timing: ProfileTiming, env_name: str) -> Profile
     )
 
 
-def _interval_override_value(env_name: str) -> str | float | None:
+def _interval_override_value(env_name: str) -> float | None:
+    if env_name not in _interval_override_cache:
+        _interval_override_cache[env_name] = _read_interval_override_value(env_name)
+    return _interval_override_cache[env_name]
+
+
+def _clear_interval_override_cache() -> None:
+    _interval_override_cache.clear()
+
+
+def _read_interval_override_value(env_name: str) -> float | None:
     raw_value = os.getenv(env_name)
     if raw_value is not None and raw_value.strip() != "":
-        return raw_value
+        try:
+            return float(raw_value)
+        except ValueError:
+            return None
     settings_field = {
         "ULTRA_FAST_MIN_INTERVAL_SECONDS": "ultra_fast_min_interval_seconds",
         "FAST1_MIN_INTERVAL_SECONDS": "fast1_min_interval_seconds",
@@ -261,6 +271,6 @@ def _interval_override_value(env_name: str) -> str | float | None:
     try:
         from app.core.config import get_settings
 
-        return getattr(get_settings(), settings_field)
+        return float(getattr(get_settings(), settings_field))
     except Exception:
         return None

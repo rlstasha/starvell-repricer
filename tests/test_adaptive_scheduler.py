@@ -1,7 +1,11 @@
 from decimal import Decimal
 
+import pytest
+
 from app.repricer.adaptive_scheduler import (
     ULTRA_FAST_POSITION_AMOUNT,
+    _clear_interval_override_cache,
+    _interval_override_value,
     apply_strategy_activity_floor,
     choose_dynamic_delay,
     display_interval_range,
@@ -10,6 +14,45 @@ from app.repricer.adaptive_scheduler import (
     timing_for_position,
     update_change_score,
 )
+
+
+@pytest.fixture(autouse=True)
+def clear_interval_override_cache() -> None:
+    _clear_interval_override_cache()
+    yield
+    _clear_interval_override_cache()
+
+
+def test_interval_override_value_reads_env_once(monkeypatch) -> None:
+    calls = []
+
+    def fake_getenv(name: str) -> str | None:
+        calls.append(name)
+        return "0.4"
+
+    monkeypatch.setattr("app.repricer.adaptive_scheduler.os.getenv", fake_getenv)
+
+    assert _interval_override_value("ULTRA_FAST_MIN_INTERVAL_SECONDS") == 0.4
+    assert _interval_override_value("ULTRA_FAST_MIN_INTERVAL_SECONDS") == 0.4
+    assert calls == ["ULTRA_FAST_MIN_INTERVAL_SECONDS"]
+
+
+def test_interval_override_value_reads_settings_once(monkeypatch) -> None:
+    calls = []
+
+    class FakeSettings:
+        fast1_min_interval_seconds = 1.1
+
+    def fake_get_settings() -> FakeSettings:
+        calls.append("settings")
+        return FakeSettings()
+
+    monkeypatch.setattr("app.repricer.adaptive_scheduler.os.getenv", lambda name: None)
+    monkeypatch.setattr("app.core.config.get_settings", fake_get_settings)
+
+    assert _interval_override_value("FAST1_MIN_INTERVAL_SECONDS") == 1.1
+    assert _interval_override_value("FAST1_MIN_INTERVAL_SECONDS") == 1.1
+    assert calls == ["settings"]
 
 
 def test_change_score_uses_exponential_smoothing() -> None:
