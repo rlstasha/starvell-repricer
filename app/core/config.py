@@ -45,7 +45,7 @@ class Settings(BaseSettings):
     market_offers_api_url: str = "/api/offers/list-by-category"
     market_offers_limit: int = Field(default=100, ge=1, le=500)
     market_category_cache_ttl_seconds: float = Field(default=1.5, ge=0, le=10)
-    market_http2_enabled: bool = True
+    market_http2_enabled: bool = False
     market_http_timeout_seconds: float = Field(default=15.0, ge=1)
     market_http_max_connections: int = Field(default=20, ge=1)
     market_http_max_keepalive_connections: int = Field(default=10, ge=0)

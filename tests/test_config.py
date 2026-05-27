@@ -126,7 +126,7 @@ def test_request_pacing_can_be_overridden_per_worker_group() -> None:
 def test_market_http_transport_defaults_are_bounded() -> None:
     settings = Settings(_env_file=None)
 
-    assert settings.market_http2_enabled is True
+    assert settings.market_http2_enabled is False
     assert settings.market_http_timeout_seconds == 15.0
     assert settings.market_http_max_connections == 20
     assert settings.market_http_max_keepalive_connections == 10
