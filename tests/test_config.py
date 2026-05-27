@@ -96,12 +96,12 @@ def test_account_effective_limit_defaults_to_full_proxy_capacity() -> None:
     assert settings.account_min_limit_per_minute == 60
 
 
-def test_request_pacing_defaults_are_fast_when_proxies_are_healthy() -> None:
+def test_request_pacing_defaults_are_safe_without_group_overrides() -> None:
     settings = Settings(_env_file=None)
 
-    assert settings.request_min_delay_ms == 100
-    assert settings.request_jitter_ms == 50
-    assert settings.request_delay_for_group("fast_1") == (100, 50)
+    assert settings.request_min_delay_ms == 300
+    assert settings.request_jitter_ms == 200
+    assert settings.request_delay_for_group("fast_1") == (300, 200)
     assert settings.scheduler_idle_sleep_for_group("fast_1") == 0.1
     assert settings.scheduler_idle_sleep_for_group("fast_2") == 0.1
     assert settings.scheduler_idle_sleep_for_group("slow") == 1.0
