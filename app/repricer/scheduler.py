@@ -75,6 +75,8 @@ class RuntimeScheduleState:
     interval_min_seconds: float | None = None
     interval_max_seconds: float | None = None
     delay_reason: str = "normal"
+    hot_last_update_monotonic: float | None = None
+    hot_consecutive_target_skips: int = 0
 
 
 class RepricerScheduler:
@@ -433,6 +435,17 @@ class RepricerScheduler:
     def _update_schedule_after_result(self, position: Position, result) -> RuntimeScheduleState:
         state = self.schedule_runtime[position.robux_amount]
         error_kind = self._error_kind(result.status, result.reason)
+        competitor_changed = (
+            state.last_competitor_price is not None
+            and result.competitor_price is not None
+            and state.last_competitor_price != result.competitor_price
+        )
+        target_equals_current = (
+            result.status == "skipped"
+            and result.old_price is not None
+            and result.new_price is not None
+            and result.old_price == result.new_price
+        )
         change_score = update_change_score(
             state.change_score,
             state.last_competitor_price,
@@ -450,6 +463,26 @@ class RepricerScheduler:
             backoff_active=backoff_active,
             previous_delay_seconds=state.current_interval_seconds,
         )
+        now_monotonic = time.monotonic()
+        hot_mode_reason = None
+        if result.status == "success":
+            state.hot_last_update_monotonic = now_monotonic
+            state.hot_consecutive_target_skips = 0
+        elif competitor_changed:
+            state.hot_consecutive_target_skips = 0
+        elif target_equals_current:
+            state.hot_consecutive_target_skips += 1
+        elif result.status == "failed":
+            state.hot_consecutive_target_skips = 0
+
+        decision, hot_mode_reason = self._maybe_override_dynamic_delay_for_hot_mode(
+            position=position,
+            state=state,
+            decision=decision,
+            backoff_active=backoff_active,
+            competitor_changed=competitor_changed,
+            now_monotonic=now_monotonic,
+        )
         timing = timing_for_position(self.settings.worker_group, position.robux_amount)
         if backoff_active:
             interval_min, interval_max = display_interval_range(
@@ -457,6 +490,8 @@ class RepricerScheduler:
                 position_amount=position.robux_amount,
                 backoff_active=True,
             )
+        elif hot_mode_reason:
+            interval_min, interval_max = decision.range_min_seconds, decision.range_max_seconds
         else:
             interval_min, interval_max = timing.min_seconds, timing.max_seconds
         checked_at = datetime.now(UTC)
@@ -464,7 +499,7 @@ class RepricerScheduler:
         state.interval_min_seconds = interval_min
         state.interval_max_seconds = interval_max
         state.delay_reason = decision.reason
-        state.next_run_monotonic = time.monotonic() + decision.delay_seconds
+        state.next_run_monotonic = now_monotonic + decision.delay_seconds
         state.last_checked_at = checked_at
         state.last_competitor_price = result.competitor_price
         state.last_own_price = result.old_price
@@ -486,6 +521,9 @@ class RepricerScheduler:
             error_score=round(error_score, 3),
             strategy_reason=result.reason,
             activity_override="min_price_bounce" if strategy_activity_override else None,
+            hot_mode_reason=hot_mode_reason,
+            hot_consecutive_target_skips=state.hot_consecutive_target_skips,
+            competitor_changed=competitor_changed,
         )
         if position.robux_amount == 500 and self.settings.worker_group == WORKER_GROUP_FAST_1 and backoff_active:
             self.logger.warning(
@@ -497,6 +535,131 @@ class RepricerScheduler:
                 last_429_at=self.last_429_at.isoformat() if self.last_429_at else None,
             )
         return state
+
+    def _maybe_override_dynamic_delay_for_hot_mode(
+        self,
+        *,
+        position: Position,
+        state: RuntimeScheduleState,
+        decision,
+        backoff_active: bool,
+        competitor_changed: bool,
+        now_monotonic: float,
+    ):
+        if backoff_active:
+            return decision, None
+
+        if self.settings.hot_mode_enabled and self._is_ultra_hot_position(position):
+            return self._hot_mode_decision(
+                state=state,
+                decision=decision,
+                competitor_changed=competitor_changed,
+                now_monotonic=now_monotonic,
+            )
+
+        if self.settings.fast_mode_enabled and self._is_fast_mode_position(position):
+            return self._fast_mode_decision(
+                state=state,
+                decision=decision,
+                competitor_changed=competitor_changed,
+                now_monotonic=now_monotonic,
+            )
+
+        return decision, None
+
+    def _is_ultra_hot_position(self, position: Position) -> bool:
+        return self.settings.worker_group == WORKER_GROUP_FAST_1 and position.robux_amount == 500
+
+    def _is_fast_mode_position(self, position: Position) -> bool:
+        if self.settings.worker_group not in {WORKER_GROUP_FAST_1, WORKER_GROUP_FAST_2}:
+            return False
+        if self._is_ultra_hot_position(position):
+            return False
+        return True
+
+    def _hot_mode_decision(
+        self,
+        *,
+        state: RuntimeScheduleState,
+        decision,
+        competitor_changed: bool,
+        now_monotonic: float,
+    ):
+        if self._hot_mode_should_cool_down(state, competitor_changed):
+            low = max(self.settings.hot_mode_cooldown_interval_seconds * 0.8, 0.01)
+            high = max(self.settings.hot_mode_cooldown_interval_seconds * 1.2, low)
+            delay = self._bounded_random_delay(low, high, state.current_interval_seconds)
+            return self._replace_delay_decision(decision, delay, low, high, "hot_mode_cooldown"), "cooldown"
+
+        if competitor_changed or self._recent_hot_update(state, now_monotonic):
+            low = self.settings.hot_mode_min_interval_seconds
+            high = self.settings.hot_mode_max_interval_seconds
+            delay = self._bounded_random_delay(low, high, state.current_interval_seconds)
+            return self._replace_delay_decision(decision, delay, low, high, "hot_mode_active"), "active"
+
+        return decision, None
+
+    def _fast_mode_decision(
+        self,
+        *,
+        state: RuntimeScheduleState,
+        decision,
+        competitor_changed: bool,
+        now_monotonic: float,
+    ):
+        if self._hot_mode_should_cool_down(state, competitor_changed):
+            low = self.settings.fast_mode_cooldown_min_interval_seconds
+            high = self.settings.fast_mode_cooldown_max_interval_seconds
+            delay = self._bounded_random_delay(low, high, state.current_interval_seconds)
+            return self._replace_delay_decision(decision, delay, low, high, "fast_mode_cooldown"), "cooldown"
+
+        if competitor_changed or self._recent_hot_update(state, now_monotonic):
+            low = self.settings.fast_mode_min_interval_seconds
+            high = self.settings.fast_mode_max_interval_seconds
+            delay = self._bounded_random_delay(low, high, state.current_interval_seconds)
+            return self._replace_delay_decision(decision, delay, low, high, "fast_mode_active"), "active"
+
+        return decision, None
+
+    def _hot_mode_should_cool_down(
+        self,
+        state: RuntimeScheduleState,
+        competitor_changed: bool,
+    ) -> bool:
+        return (
+            not competitor_changed
+            and state.hot_consecutive_target_skips >= self.settings.hot_mode_skipped_threshold
+        )
+
+    def _recent_hot_update(self, state: RuntimeScheduleState, now_monotonic: float) -> bool:
+        if state.hot_last_update_monotonic is None:
+            return False
+        return now_monotonic - state.hot_last_update_monotonic <= self.settings.hot_mode_window_seconds
+
+    def _bounded_random_delay(
+        self,
+        low: float,
+        high: float,
+        previous_delay: float | None,
+    ) -> float:
+        normalized_low = max(min(low, high), 0.01)
+        normalized_high = max(high, normalized_low)
+        delay = random.uniform(normalized_low, normalized_high)
+        if previous_delay is not None and abs(delay - previous_delay) < 0.05:
+            if delay + 0.08 <= normalized_high:
+                delay += 0.08
+            elif delay - 0.08 >= normalized_low:
+                delay -= 0.08
+        return round(delay, 2)
+
+    @staticmethod
+    def _replace_delay_decision(decision, delay: float, low: float, high: float, reason: str):
+        return type(decision)(
+            delay_seconds=delay,
+            reason=reason,
+            range_min_seconds=round(low, 2),
+            range_max_seconds=round(high, 2),
+        )
 
     def _filter_assigned_positions(self, positions):
         if self.settings.worker_group == WORKER_GROUP_ALL:

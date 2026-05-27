@@ -124,6 +124,17 @@ class Settings(BaseSettings):
     ultra_fast_min_interval_seconds: float = Field(default=0.8, ge=0.01)
     fast1_min_interval_seconds: float = Field(default=1.5, ge=0.01)
     fast2_min_interval_seconds: float = Field(default=2.0, ge=0.01)
+    hot_mode_enabled: bool = False
+    hot_mode_min_interval_seconds: float = Field(default=0.25, ge=0.01)
+    hot_mode_max_interval_seconds: float = Field(default=0.5, ge=0.01)
+    hot_mode_cooldown_interval_seconds: float = Field(default=1.0, ge=0.01)
+    hot_mode_skipped_threshold: int = Field(default=3, ge=1)
+    hot_mode_window_seconds: float = Field(default=10.0, ge=1)
+    fast_mode_enabled: bool = False
+    fast_mode_min_interval_seconds: float = Field(default=0.8, ge=0.01)
+    fast_mode_max_interval_seconds: float = Field(default=1.2, ge=0.01)
+    fast_mode_cooldown_min_interval_seconds: float = Field(default=1.5, ge=0.01)
+    fast_mode_cooldown_max_interval_seconds: float = Field(default=2.5, ge=0.01)
 
     @field_validator("owner_telegram_ids")
     @classmethod
@@ -235,6 +246,18 @@ class Settings(BaseSettings):
         if self.market_http_max_keepalive_connections > self.market_http_max_connections:
             raise ValueError(
                 "MARKET_HTTP_MAX_KEEPALIVE_CONNECTIONS must be <= MARKET_HTTP_MAX_CONNECTIONS"
+            )
+        if self.hot_mode_min_interval_seconds > self.hot_mode_max_interval_seconds:
+            raise ValueError(
+                "HOT_MODE_MIN_INTERVAL_SECONDS must be <= HOT_MODE_MAX_INTERVAL_SECONDS"
+            )
+        if self.fast_mode_min_interval_seconds > self.fast_mode_max_interval_seconds:
+            raise ValueError(
+                "FAST_MODE_MIN_INTERVAL_SECONDS must be <= FAST_MODE_MAX_INTERVAL_SECONDS"
+            )
+        if self.fast_mode_cooldown_min_interval_seconds > self.fast_mode_cooldown_max_interval_seconds:
+            raise ValueError(
+                "FAST_MODE_COOLDOWN_MIN_INTERVAL_SECONDS must be <= FAST_MODE_COOLDOWN_MAX_INTERVAL_SECONDS"
             )
         for value_name, value in (
             ("FAST1_MIN_DELAY_MS", self.fast1_min_delay_ms),

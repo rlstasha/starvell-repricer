@@ -94,6 +94,13 @@ async def _run_single_worker(settings, session_factory, redis: Redis) -> None:
         ultra_fast_min_interval_seconds=settings.ultra_fast_min_interval_seconds,
         fast1_min_interval_seconds=settings.fast1_min_interval_seconds,
         fast2_min_interval_seconds=settings.fast2_min_interval_seconds,
+        hot_mode_enabled=settings.hot_mode_enabled,
+        hot_mode_min_interval_seconds=settings.hot_mode_min_interval_seconds,
+        hot_mode_max_interval_seconds=settings.hot_mode_max_interval_seconds,
+        hot_mode_cooldown_interval_seconds=settings.hot_mode_cooldown_interval_seconds,
+        fast_mode_enabled=settings.fast_mode_enabled,
+        fast_mode_min_interval_seconds=settings.fast_mode_min_interval_seconds,
+        fast_mode_max_interval_seconds=settings.fast_mode_max_interval_seconds,
     )
     scheduler = RepricerScheduler(
         settings=settings,

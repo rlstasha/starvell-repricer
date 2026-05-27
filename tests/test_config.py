@@ -109,6 +109,17 @@ def test_request_pacing_defaults_are_safe_without_group_overrides() -> None:
     assert settings.ultra_fast_min_interval_seconds == 0.8
     assert settings.fast1_min_interval_seconds == 1.5
     assert settings.fast2_min_interval_seconds == 2.0
+    assert settings.hot_mode_enabled is False
+    assert settings.hot_mode_min_interval_seconds == 0.25
+    assert settings.hot_mode_max_interval_seconds == 0.5
+    assert settings.hot_mode_cooldown_interval_seconds == 1.0
+    assert settings.hot_mode_skipped_threshold == 3
+    assert settings.hot_mode_window_seconds == 10.0
+    assert settings.fast_mode_enabled is False
+    assert settings.fast_mode_min_interval_seconds == 0.8
+    assert settings.fast_mode_max_interval_seconds == 1.2
+    assert settings.fast_mode_cooldown_min_interval_seconds == 1.5
+    assert settings.fast_mode_cooldown_max_interval_seconds == 2.5
 
 
 def test_request_pacing_can_be_overridden_per_worker_group() -> None:
