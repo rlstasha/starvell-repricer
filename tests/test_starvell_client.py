@@ -19,6 +19,34 @@ from app.market.exceptions import StarvellEndpointNotConfiguredError, StarvellWr
 from app.repricer.rate_limiter import InMemoryFixedWindowRateLimiter
 
 
+def test_http_client_kwargs_enable_http2_and_connection_limits() -> None:
+    settings = Settings(
+        _env_file=None,
+        market_base_url="https://starvell.example",
+        market_http2_enabled=True,
+        market_http_timeout_seconds=12,
+        market_http_max_connections=7,
+        market_http_max_keepalive_connections=3,
+    )
+    starvell = StarvellClient(settings, InMemoryFixedWindowRateLimiter())
+
+    kwargs = starvell._http_client_kwargs()
+
+    assert kwargs["http2"] is True
+    assert kwargs["timeout"].connect == 12
+    assert kwargs["limits"].max_connections == 7
+    assert kwargs["limits"].max_keepalive_connections == 3
+
+
+def test_http2_fallback_is_used_only_for_owned_clients() -> None:
+    settings = Settings(_env_file=None, market_http2_enabled=True)
+    starvell = StarvellClient(settings, InMemoryFixedWindowRateLimiter())
+
+    assert starvell._disable_http2_after_transport_error(httpx.ProxyError("bad proxy")) is True
+    assert starvell._http_client_kwargs()["http2"] is False
+    assert starvell._disable_http2_after_transport_error(httpx.ProxyError("bad proxy")) is False
+
+
 @pytest.mark.asyncio
 async def test_check_connection_does_not_guess_unknown_endpoints() -> None:
     async def handler(request: httpx.Request) -> httpx.Response:

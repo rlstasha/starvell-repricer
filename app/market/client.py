@@ -150,6 +150,7 @@ class StarvellClient:
         self.proxy_profile = proxy_profile
         self.proxy_url = proxy_url
         self.logger = get_logger(__name__)
+        self._http2_disabled = False
         self._market_category_cache: dict[str, tuple[float, MarketOffersFetchResult]] = {}
         self._market_category_inflight: dict[str, asyncio.Task[MarketOffersFetchResult]] = {}
 
@@ -164,9 +165,14 @@ class StarvellClient:
     def _http_client_kwargs(self) -> dict[str, Any]:
         client_kwargs: dict[str, Any] = {
             "base_url": self.settings.market_base_url,
-            "timeout": httpx.Timeout(30.0),
+            "timeout": httpx.Timeout(self.settings.market_http_timeout_seconds),
             "headers": self._default_headers(),
             "cookies": self._default_cookies(),
+            "limits": httpx.Limits(
+                max_connections=self.settings.market_http_max_connections,
+                max_keepalive_connections=self.settings.market_http_max_keepalive_connections,
+            ),
+            "http2": self.settings.market_http2_enabled and not self._http2_disabled,
         }
         if self.proxy_url:
             client_kwargs["proxy"] = self.proxy_url
@@ -231,6 +237,7 @@ class StarvellClient:
                 raise
             except httpx.TransportError as exc:
                 self._apply_transport_backoff(exc)
+                http2_fallback_applied = self._disable_http2_after_transport_error(exc)
                 self.logger.warning(
                     "starvell_http_transport_error",
                     method=method,
@@ -240,6 +247,8 @@ class StarvellClient:
                     error_type=type(exc).__name__,
                     proxy_profile=self.proxy_profile or "direct",
                     proxy=mask_proxy_url(self.proxy_url),
+                    http2_enabled=self.settings.market_http2_enabled and not self._http2_disabled,
+                    http2_fallback_applied=http2_fallback_applied,
                     attempt=attempt,
                     will_retry=attempt < attempts,
                 )
@@ -251,6 +260,7 @@ class StarvellClient:
                 if not _looks_like_proxy_transport_error(exc):
                     raise
                 self._apply_transport_backoff(exc)
+                http2_fallback_applied = self._disable_http2_after_transport_error(exc)
                 self.logger.warning(
                     "starvell_proxy_transport_error",
                     method=method,
@@ -260,6 +270,8 @@ class StarvellClient:
                     error_type=type(exc).__name__,
                     proxy_profile=self.proxy_profile or "direct",
                     proxy=mask_proxy_url(self.proxy_url),
+                    http2_enabled=self.settings.market_http2_enabled and not self._http2_disabled,
+                    http2_fallback_applied=http2_fallback_applied,
                     attempt=attempt,
                     will_retry=attempt < attempts,
                 )
@@ -282,6 +294,7 @@ class StarvellClient:
                 status_code=response.status_code,
                 proxy_profile=self.proxy_profile or "direct",
                 proxy=mask_proxy_url(self.proxy_url),
+                http2_enabled=self.settings.market_http2_enabled and not self._http2_disabled,
             )
             response.raise_for_status()
             return response
@@ -291,6 +304,21 @@ class StarvellClient:
     def _apply_transport_backoff(self, exc: Exception) -> None:
         if hasattr(self.rate_limiter, "apply_backoff"):
             self.rate_limiter.apply_backoff("proxy" if self.proxy_url else "network")
+
+    def _disable_http2_after_transport_error(self, exc: Exception) -> bool:
+        if not self._owns_http_client:
+            return False
+        if not self.settings.market_http2_enabled or self._http2_disabled:
+            return False
+        self._http2_disabled = True
+        self.logger.warning(
+            "starvell_http2_fallback_to_http1",
+            reason=safe_starvell_error_reason(exc),
+            error_type=type(exc).__name__,
+            proxy_profile=self.proxy_profile or "direct",
+            proxy=mask_proxy_url(self.proxy_url),
+        )
+        return True
 
     async def _get_json(self, url: str, *, request_type: str) -> tuple[Any, int]:
         response = await self._request("GET", url, request_type=request_type)

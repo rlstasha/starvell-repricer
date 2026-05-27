@@ -45,6 +45,10 @@ class Settings(BaseSettings):
     market_offers_api_url: str = "/api/offers/list-by-category"
     market_offers_limit: int = Field(default=100, ge=1, le=500)
     market_category_cache_ttl_seconds: float = Field(default=1.5, ge=0, le=10)
+    market_http2_enabled: bool = True
+    market_http_timeout_seconds: float = Field(default=15.0, ge=1)
+    market_http_max_connections: int = Field(default=20, ge=1)
+    market_http_max_keepalive_connections: int = Field(default=10, ge=0)
     enable_real_price_writes: bool = False
     market_update_lot_price_url: str = ""
     market_update_lot_price_method: str = "POST"
@@ -223,6 +227,10 @@ class Settings(BaseSettings):
             raise ValueError("HIGH_PRIORITY_PERCENT and NORMAL_PRIORITY_PERCENT must sum to 100")
         if self.request_min_delay_ms > self.request_max_delay_ms:
             raise ValueError("REQUEST_MIN_DELAY_MS must be <= REQUEST_MAX_DELAY_MS")
+        if self.market_http_max_keepalive_connections > self.market_http_max_connections:
+            raise ValueError(
+                "MARKET_HTTP_MAX_KEEPALIVE_CONNECTIONS must be <= MARKET_HTTP_MAX_CONNECTIONS"
+            )
         for value_name, value in (
             ("FAST1_MIN_DELAY_MS", self.fast1_min_delay_ms),
             ("FAST2_MIN_DELAY_MS", self.fast2_min_delay_ms),
