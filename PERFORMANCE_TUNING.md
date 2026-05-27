@@ -186,3 +186,54 @@ Interpretation:
 - Higher configured limits did not automatically increase useful throughput: `500` and `600` were worse than `400`.
 - `600` hit a proxy transport error, so it is not safe.
 - Keep `RATE_LIMITER_SOFT_CAP_ENABLED=true` by default. Use `false` only for controlled ceiling probes.
+
+## Soft-cap-off follow-up with isolated proxy transport errors
+
+Date: 2026-05-27
+
+The previous `600` step stopped on one retried proxy transport spike, not on Starvell 429:
+
+```text
+slow / price_update_context -> proxy_malformed_reply, will_retry=true
+fast_2 / market_offers -> proxy_malformed_reply, will_retry=true
+fast_1 / market_offers -> proxy_malformed_reply, will_retry=true
+```
+
+For the follow-up probe, a single retried transport error is recorded but does not stop the run.
+Stop conditions were: real 429/rate_limited, price_update_failed, or 2+ proxy transport errors.
+
+Temporary overrides:
+
+```env
+RATE_LIMITER_SOFT_CAP_ENABLED=false
+SCHEDULER_MAX_CONCURRENT_POSITIONS=2
+ULTRA_FAST_MIN_INTERVAL_SECONDS=0.4
+FAST1_MIN_INTERVAL_SECONDS=0.8
+FAST1_MIN_DELAY_MS=200
+FAST1_JITTER_MS=100
+MY_LOT_STATE_CACHE_TTL_SECONDS=30
+```
+
+| Step | Hot/Fast mode | 429 | max req/60s | req/min | updated/min | skipped/min | wait count | proxy transport | write failures | useful/100 req | 500R avg/p95 ms | 800 avg/p95 ms | 1000 avg/p95 ms | verdict |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 600 | off | 0 | 393 | 353.4 | 71.5 | 62.8 | 0 | 0 | 0 | 20.24 | 1167 / 2851 | 1420 / 3767 | 1429 / 3349 | clean, useful |
+| 700 | off | 0 | 383 | 352.6 | 73.6 | 54.0 | 0 | 0 | 0 | 20.88 | 1333 / 3358 | 1634 / 3553 | 1480 / 2924 | best useful probe |
+| 800 | off | 0 | 393 | 356.6 | 73.0 | 60.7 | 0 | 0 | 0 | 20.47 | 1102 / 3142 | 1424 / 3548 | 1411 / 3101 | no useful gain |
+| 700 | on | 0 | 381 | 342.0 | 59.9 | 125.7 | 0 | 0 | 0 | 17.51 | 617 / 2063 | 625 / 1497 | 936 / 2726 | unsafe useful ratio |
+
+Result:
+
+```text
+starvell_real_ceiling: still not reached
+highest observed clean 60-second window without 429: 393 requests
+best useful supervised probe: GLOBAL/ACCOUNT=700, soft cap off, c2, hot/fast mode off
+production recommendation: keep defaults safe; do not enable soft-cap-off or hot mode by default
+```
+
+Interpretation:
+
+- The `600` stop was a proxy transport issue, not Starvell real ceiling.
+- No real 429 appeared up to observed `393 req/60s`.
+- `700` produced the best useful score in this short probe, but it is a supervised benchmark setting only.
+- `800` did not improve useful throughput and increased skipped rate versus `700`; do not go higher without a longer soak.
+- Opt-in hot/fast mode reduced 500R average cycle time, but it caused skipped spam and lower useful updates per request. Keep it disabled by default.
