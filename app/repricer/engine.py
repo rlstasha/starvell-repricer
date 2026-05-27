@@ -1,6 +1,8 @@
+import asyncio
 from collections import Counter
 from dataclasses import dataclass
 from decimal import Decimal
+from time import perf_counter
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -81,6 +83,7 @@ class RepricerEngine:
             return ProcessResult(position_amount, "failed", reason, None, None, None)
 
     async def _process_loaded_position(self, position: Position) -> ProcessResult:
+        cycle_started_at = perf_counter()
         if not position.lot_id:
             await self._record_missing_lot(position)
             return ProcessResult(
@@ -92,12 +95,25 @@ class RepricerEngine:
                 position.state.last_seen_competitor_price if position.state else None,
             )
 
-        market_result = await self.starvell_client.get_market_offers_result(
-            position.robux_amount,
-            position.lot_id,
+        parallel_fetch_enabled = True
+        market_task = asyncio.create_task(
+            self._timed_market_fetch(position.robux_amount, position.lot_id)
         )
+        own_lot_task = asyncio.create_task(
+            self._timed_my_lot_fetch(position.robux_amount, position.lot_id)
+        )
+        try:
+            (market_result, market_request_ms), (own_lot, my_lot_request_ms) = await asyncio.gather(
+                market_task,
+                own_lot_task,
+            )
+        except Exception:
+            for task in (market_task, own_lot_task):
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(market_task, own_lot_task, return_exceptions=True)
+            raise
         offers = market_result.offers
-        own_lot = await self.starvell_client.get_my_lot(position.robux_amount, position.lot_id)
         current_price = self._current_price(position, own_lot)
 
         filter_settings = CompetitorFilterSettings(
@@ -155,6 +171,18 @@ class RepricerEngine:
                 status=UpdateStatus.SKIPPED.value,
                 reason=decision.reason,
             )
+            self._log_cycle_profile(
+                position=position,
+                status=UpdateStatus.SKIPPED.value,
+                reason=decision.reason,
+                decision=decision,
+                current_price=current_price,
+                target_price=None,
+                market_request_ms=market_request_ms,
+                my_lot_request_ms=my_lot_request_ms,
+                cycle_started_at=cycle_started_at,
+                parallel_fetch_enabled=parallel_fetch_enabled,
+            )
             return ProcessResult(
                 position.robux_amount,
                 UpdateStatus.SKIPPED.value,
@@ -172,6 +200,18 @@ class RepricerEngine:
                 new_price=decision.target_price,
                 status=UpdateStatus.SKIPPED.value,
                 reason=decision.reason,
+            )
+            self._log_cycle_profile(
+                position=position,
+                status=UpdateStatus.SKIPPED.value,
+                reason=decision.reason,
+                decision=decision,
+                current_price=current_price,
+                target_price=decision.target_price,
+                market_request_ms=market_request_ms,
+                my_lot_request_ms=my_lot_request_ms,
+                cycle_started_at=cycle_started_at,
+                parallel_fetch_enabled=parallel_fetch_enabled,
             )
             return ProcessResult(
                 position.robux_amount,
@@ -198,6 +238,18 @@ class RepricerEngine:
                 old_price=str(current_price),
                 new_price=str(decision.target_price),
                 competitor_price=str(decision.competitor_price),
+            )
+            self._log_cycle_profile(
+                position=position,
+                status=UpdateStatus.DRY_RUN.value,
+                reason=decision.reason,
+                decision=decision,
+                current_price=current_price,
+                target_price=decision.target_price,
+                market_request_ms=market_request_ms,
+                my_lot_request_ms=my_lot_request_ms,
+                cycle_started_at=cycle_started_at,
+                parallel_fetch_enabled=parallel_fetch_enabled,
             )
             return ProcessResult(
                 position.robux_amount,
@@ -231,6 +283,18 @@ class RepricerEngine:
             new_price=str(decision.target_price),
             competitor_price=str(decision.competitor_price),
         )
+        self._log_cycle_profile(
+            position=position,
+            status=UpdateStatus.SUCCESS.value,
+            reason=decision.reason,
+            decision=decision,
+            current_price=current_price,
+            target_price=decision.target_price,
+            market_request_ms=market_request_ms,
+            my_lot_request_ms=my_lot_request_ms,
+            cycle_started_at=cycle_started_at,
+            parallel_fetch_enabled=parallel_fetch_enabled,
+        )
         return ProcessResult(
             position.robux_amount,
             UpdateStatus.SUCCESS.value,
@@ -238,6 +302,50 @@ class RepricerEngine:
             current_price,
             decision.target_price,
             decision.competitor_price,
+        )
+
+    async def _timed_market_fetch(self, position_amount: int, lot_id: str):
+        started_at = perf_counter()
+        result = await self.starvell_client.get_market_offers_result(position_amount, lot_id)
+        return result, _elapsed_ms(started_at)
+
+    async def _timed_my_lot_fetch(self, position_amount: int, lot_id: str | None):
+        started_at = perf_counter()
+        result = await self.starvell_client.get_my_lot(position_amount, lot_id)
+        return result, _elapsed_ms(started_at)
+
+    def _log_cycle_profile(
+        self,
+        *,
+        position: Position,
+        status: str,
+        reason: str,
+        decision: PriceDecision,
+        current_price: Decimal | None,
+        target_price: Decimal | None,
+        market_request_ms: float,
+        my_lot_request_ms: float,
+        cycle_started_at: float,
+        parallel_fetch_enabled: bool,
+    ) -> None:
+        self.logger.info(
+            "repricer_cycle_profile",
+            proxy_profile=self.settings.worker_group,
+            position=position.robux_amount,
+            lot_id=position.lot_id,
+            status=status,
+            reason=reason,
+            parallel_fetch_enabled=parallel_fetch_enabled,
+            market_request_ms=market_request_ms,
+            my_lot_request_ms=my_lot_request_ms,
+            cycle_total_ms=_elapsed_ms(cycle_started_at),
+            current_price=str(current_price) if current_price is not None else None,
+            target_price=str(target_price) if target_price is not None else None,
+            competitor_price=(
+                str(decision.competitor_price)
+                if decision.competitor_price is not None
+                else None
+            ),
         )
 
     async def _record_decision(
@@ -328,3 +436,7 @@ class RepricerEngine:
         if position.state is not None:
             return position.state.current_own_price
         return None
+
+
+def _elapsed_ms(started_at: float) -> float:
+    return round((perf_counter() - started_at) * 1000, 2)
