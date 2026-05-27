@@ -78,6 +78,22 @@ async def _run_single_worker(settings, session_factory, redis: Redis) -> None:
         proxy_profile=settings.worker_group,
         proxy=mask_proxy_url(proxy_url),
     )
+    min_delay_ms, jitter_ms = settings.request_delay_for_group(settings.worker_group)
+    logger.info(
+        "repricer_worker_active_tuning",
+        worker_group=settings.worker_group,
+        request_min_delay_ms=settings.request_min_delay_ms,
+        request_jitter_ms=settings.request_jitter_ms,
+        group_min_delay_ms=min_delay_ms,
+        group_jitter_ms=jitter_ms,
+        fast1_min_delay_ms=settings.fast1_min_delay_ms,
+        fast1_jitter_ms=settings.fast1_jitter_ms,
+        market_http2_enabled=settings.market_http2_enabled,
+        scheduler_max_concurrent_positions=settings.scheduler_max_concurrent_positions,
+        ultra_fast_min_interval_seconds=settings.ultra_fast_min_interval_seconds,
+        fast1_min_interval_seconds=settings.fast1_min_interval_seconds,
+        fast2_min_interval_seconds=settings.fast2_min_interval_seconds,
+    )
     scheduler = RepricerScheduler(
         settings=settings,
         session_factory=session_factory,
