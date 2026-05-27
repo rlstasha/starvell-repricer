@@ -86,6 +86,7 @@ async def _run_single_worker(settings, session_factory, redis: Redis) -> None:
         request_jitter_ms=settings.request_jitter_ms,
         group_min_delay_ms=min_delay_ms,
         group_jitter_ms=jitter_ms,
+        rate_limiter_soft_cap_enabled=settings.rate_limiter_soft_cap_enabled,
         fast1_min_delay_ms=settings.fast1_min_delay_ms,
         fast1_jitter_ms=settings.fast1_jitter_ms,
         market_http2_enabled=settings.market_http2_enabled,

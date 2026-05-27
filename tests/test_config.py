@@ -92,6 +92,7 @@ def test_account_effective_limit_defaults_to_full_proxy_capacity() -> None:
     settings = Settings(_env_file=None)
 
     assert settings.token_limit_mode is True
+    assert settings.rate_limiter_soft_cap_enabled is True
     assert settings.account_effective_limit_per_minute == 300
     assert settings.account_min_limit_per_minute == 60
 

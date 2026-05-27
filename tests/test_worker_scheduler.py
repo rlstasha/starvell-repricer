@@ -2,6 +2,7 @@ import pytest
 
 from app.core.config import Settings
 from app.db.models import Position
+from app.repricer.rate_limiter import NoopRateLimiter
 from app.repricer.scheduler import RAMP_UP_IDLE_SECONDS, RepricerScheduler, RuntimeScheduleState
 
 
@@ -82,6 +83,23 @@ def test_worker_scheduler_collects_due_positions_with_concurrency_limit() -> Non
     assert len(due) == 2
     assert {position.robux_amount for position in due} <= {500, 800, 1000}
     assert len(scheduler.schedule_heap) == 1
+
+
+def test_worker_scheduler_can_disable_proactive_rate_limits_for_benchmarks() -> None:
+    settings = Settings(
+        _env_file=None,
+        worker_group="fast_1",
+        rate_limiter_soft_cap_enabled=False,
+    )
+    scheduler = RepricerScheduler(
+        settings=settings,
+        session_factory=object(),
+        redis=object(),
+    )
+
+    assert isinstance(scheduler.rate_limiter.profile_limiter, NoopRateLimiter)
+    assert isinstance(scheduler.rate_limiter.global_limiter, NoopRateLimiter)
+    assert scheduler.rate_limiter.burst_limiter is None
 
 
 @pytest.mark.asyncio

@@ -410,6 +410,22 @@ class RedisAdaptiveTokenBucketRateLimiter:
         await pipe.execute()
 
 
+class NoopRateLimiter:
+    """Limiter shim for controlled benchmarks that disables proactive caps."""
+
+    async def try_acquire(self, cost: int = 1) -> bool:
+        if cost < 1:
+            raise ValueError("cost must be >= 1")
+        return True
+
+    async def acquire(self, cost: int = 1) -> None:
+        if cost < 1:
+            raise ValueError("cost must be >= 1")
+
+    async def current_usage(self) -> int:
+        return 0
+
+
 class CompositeRateLimiter:
     """Profile limiter + global limiter + small pacing/backoff guard."""
 

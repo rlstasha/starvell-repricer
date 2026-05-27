@@ -89,6 +89,7 @@ class Settings(BaseSettings):
     request_limit_per_minute: int = Field(default=100, ge=1)
     global_request_limit_per_minute: int = Field(default=300, ge=1)
     token_limit_mode: bool = True
+    rate_limiter_soft_cap_enabled: bool = True
     account_effective_limit_per_minute: int = Field(default=300, ge=1)
     account_min_limit_per_minute: int = Field(default=60, ge=1)
     account_limit_decrease_step_per_minute: int = Field(default=30, ge=1)
