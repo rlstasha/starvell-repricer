@@ -278,6 +278,78 @@ def test_hot_mode_does_not_override_backoff(monkeypatch) -> None:
     assert state.current_interval_seconds >= 2.0
 
 
+def test_post_update_multiplier_can_schedule_immediate_followup(monkeypatch) -> None:
+    monkeypatch.setattr("app.repricer.scheduler.random.uniform", lambda low, high: high)
+    settings = Settings(
+        _env_file=None,
+        worker_group="fast_1",
+        post_update_interval_multiplier=0.5,
+    )
+    scheduler = RepricerScheduler(settings=settings, session_factory=object(), redis=object())
+    scheduler.schedule_runtime = {
+        500: RuntimeScheduleState(
+            position_amount=500,
+            lot_id="2000",
+            proxy_profile="fast_1",
+            base_interval_seconds=1.0,
+            current_interval_seconds=1.0,
+            next_run_monotonic=1.0,
+            last_checked_at=None,
+            last_competitor_price=Decimal("315.00"),
+            last_own_price=Decimal("314.40"),
+        )
+    }
+
+    state = scheduler._update_schedule_after_result(
+        Position(robux_amount=500),
+        _SchedulerResult(
+            status="success",
+            reason="competitor_undercut",
+            old_price=Decimal("314.40"),
+            new_price=Decimal("314.20"),
+            competitor_price=Decimal("315.00"),
+        ),
+    )
+
+    assert state.delay_reason == "post_update_followup"
+    assert state.current_interval_seconds == 0.2
+    assert state.interval_min_seconds == 0.2
+    assert state.interval_max_seconds == 0.2
+
+
+def test_post_update_multiplier_keeps_default_scheduler_behavior(monkeypatch) -> None:
+    monkeypatch.setattr("app.repricer.scheduler.random.uniform", lambda low, high: high)
+    settings = Settings(_env_file=None, worker_group="fast_1")
+    scheduler = RepricerScheduler(settings=settings, session_factory=object(), redis=object())
+    scheduler.schedule_runtime = {
+        500: RuntimeScheduleState(
+            position_amount=500,
+            lot_id="2000",
+            proxy_profile="fast_1",
+            base_interval_seconds=1.0,
+            current_interval_seconds=1.0,
+            next_run_monotonic=1.0,
+            last_checked_at=None,
+            last_competitor_price=Decimal("315.00"),
+            last_own_price=Decimal("314.40"),
+        )
+    }
+
+    state = scheduler._update_schedule_after_result(
+        Position(robux_amount=500),
+        _SchedulerResult(
+            status="success",
+            reason="competitor_undercut",
+            old_price=Decimal("314.40"),
+            new_price=Decimal("314.20"),
+            competitor_price=Decimal("315.00"),
+        ),
+    )
+
+    assert state.delay_reason != "post_update_followup"
+    assert state.current_interval_seconds >= settings.ultra_fast_min_interval_seconds
+
+
 @pytest.mark.asyncio
 async def test_worker_scheduler_reduces_effective_limit_after_429() -> None:
     settings = Settings(_env_file=None, worker_group="fast_1")

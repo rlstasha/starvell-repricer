@@ -135,6 +135,7 @@ class Settings(BaseSettings):
     fast_mode_max_interval_seconds: float = Field(default=1.2, ge=0.01)
     fast_mode_cooldown_min_interval_seconds: float = Field(default=1.5, ge=0.01)
     fast_mode_cooldown_max_interval_seconds: float = Field(default=2.5, ge=0.01)
+    post_update_interval_multiplier: float = Field(default=1.0, ge=0.01, le=10.0)
 
     @field_validator("owner_telegram_ids")
     @classmethod

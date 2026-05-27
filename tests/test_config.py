@@ -126,6 +126,7 @@ def test_request_pacing_defaults_are_safe_without_group_overrides() -> None:
     assert settings.fast_mode_max_interval_seconds == 1.2
     assert settings.fast_mode_cooldown_min_interval_seconds == 1.5
     assert settings.fast_mode_cooldown_max_interval_seconds == 2.5
+    assert settings.post_update_interval_multiplier == 1.0
 
 
 def test_request_pacing_can_be_overridden_per_worker_group() -> None:

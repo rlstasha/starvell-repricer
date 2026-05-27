@@ -484,13 +484,21 @@ class RepricerScheduler:
             now_monotonic=now_monotonic,
         )
         timing = timing_for_position(self.settings.worker_group, position.robux_amount)
+        post_update_reason = None
+        decision, post_update_reason = self._maybe_override_post_update_delay(
+            position=position,
+            decision=decision,
+            backoff_active=backoff_active,
+            timing=timing,
+            result_status=result.status,
+        )
         if backoff_active:
             interval_min, interval_max = display_interval_range(
                 self.settings.worker_group,
                 position_amount=position.robux_amount,
                 backoff_active=True,
             )
-        elif hot_mode_reason:
+        elif hot_mode_reason or post_update_reason:
             interval_min, interval_max = decision.range_min_seconds, decision.range_max_seconds
         else:
             interval_min, interval_max = timing.min_seconds, timing.max_seconds
@@ -522,6 +530,8 @@ class RepricerScheduler:
             strategy_reason=result.reason,
             activity_override="min_price_bounce" if strategy_activity_override else None,
             hot_mode_reason=hot_mode_reason,
+            post_update_reason=post_update_reason,
+            post_update_interval_multiplier=self.settings.post_update_interval_multiplier,
             hot_consecutive_target_skips=state.hot_consecutive_target_skips,
             competitor_changed=competitor_changed,
         )
@@ -535,6 +545,30 @@ class RepricerScheduler:
                 last_429_at=self.last_429_at.isoformat() if self.last_429_at else None,
             )
         return state
+
+    def _maybe_override_post_update_delay(
+        self,
+        *,
+        position: Position,
+        decision,
+        backoff_active: bool,
+        timing,
+        result_status: str,
+    ):
+        multiplier = self.settings.post_update_interval_multiplier
+        if backoff_active or result_status != "success" or multiplier == 1.0:
+            return decision, None
+        delay = round(max(timing.min_seconds * multiplier, 0.01), 2)
+        return (
+            self._replace_delay_decision(
+                decision,
+                delay,
+                delay,
+                delay,
+                "post_update_followup",
+            ),
+            "post_update_followup",
+        )
 
     def _maybe_override_dynamic_delay_for_hot_mode(
         self,

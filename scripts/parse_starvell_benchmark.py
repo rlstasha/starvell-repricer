@@ -51,6 +51,7 @@ def summarize(objects: list[dict[str, Any]]) -> dict[str, Any]:
             proxy_errors_by_request_type[str(item.get("request_type") or "unknown")] += 1
 
     cycles = [item for item in objects if item.get("event") == "repricer_cycle_profile"]
+    phase_profiles = [item for item in objects if item.get("event") == "repricer_cycle_phase_profile"]
     updates = [item for item in objects if item.get("event") == "price_updated"]
     skipped = [item for item in cycles if item.get("status") == "skipped"]
     failed = [
@@ -95,6 +96,9 @@ def summarize(objects: list[dict[str, Any]]) -> dict[str, Any]:
         ),
         "cycle_profiles": len(cycles),
         "cycle_total_ms_by_position": cycle_by_position,
+        "phase_profiles": len(phase_profiles),
+        "phase_ms": _phase_summary(phase_profiles),
+        "dominant_phases": dict(Counter(str(item.get("dominant_phase")) for item in phase_profiles)),
         "parallel_fetch": dict(parallel),
         "parallel_fetch_true_pct": (
             round(parallel["True"] / len(cycles) * 100, 2)
@@ -148,6 +152,34 @@ def _cycle_stats_by_position(cycles: list[dict[str, Any]]) -> dict[str, dict[str
             "max": round(max(items), 2),
         }
         for position, items in sorted(values.items(), key=lambda pair: int(pair[0]))
+    }
+
+
+def _phase_summary(phase_profiles: list[dict[str, Any]]) -> dict[str, dict[str, float]]:
+    phase_values: dict[str, list[float]] = defaultdict(list)
+    for item in phase_profiles:
+        for field in (
+            "market_fetch_ms",
+            "own_lot_fetch_ms",
+            "price_write_ms",
+            "db_commit_ms",
+            "cycle_total_with_commit_ms",
+        ):
+            value = item.get(field)
+            if value is None:
+                continue
+            try:
+                phase_values[field].append(float(value))
+            except (TypeError, ValueError):
+                continue
+    return {
+        field: {
+            "avg": round(statistics.mean(values), 2),
+            "p95": round(_percentile(values, 95), 2),
+            "max": round(max(values), 2),
+        }
+        for field, values in sorted(phase_values.items())
+        if values
     }
 
 

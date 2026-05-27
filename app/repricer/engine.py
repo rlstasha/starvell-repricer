@@ -1,6 +1,6 @@
 import asyncio
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 from time import perf_counter
 
@@ -29,6 +29,7 @@ class ProcessResult:
     old_price: Decimal | None
     new_price: Decimal | None
     competitor_price: Decimal | None
+    phase_metrics: dict[str, float | bool | str | None] = field(default_factory=dict, compare=False)
 
 
 class RepricerEngine:
@@ -58,7 +59,15 @@ class RepricerEngine:
 
         try:
             result = await self._process_loaded_position(position)
+            db_commit_started_at = perf_counter()
             await self.session.commit()
+            db_commit_ms = _elapsed_ms(db_commit_started_at)
+            if result.phase_metrics:
+                self._log_cycle_phase_profile(
+                    position=position,
+                    result=result,
+                    db_commit_ms=db_commit_ms,
+                )
             return result
         except Exception as exc:
             await self.session.rollback()
@@ -84,6 +93,7 @@ class RepricerEngine:
 
     async def _process_loaded_position(self, position: Position) -> ProcessResult:
         cycle_started_at = perf_counter()
+        price_write_ms = 0.0
         if not position.lot_id:
             await self._record_missing_lot(position)
             return ProcessResult(
@@ -216,6 +226,15 @@ class RepricerEngine:
                 target_price=None,
                 market_request_ms=market_request_ms,
                 my_lot_request_ms=my_lot_request_ms,
+                price_write_ms=price_write_ms,
+                cycle_started_at=cycle_started_at,
+                parallel_fetch_enabled=parallel_fetch_enabled,
+                parallel_fetch_disabled_reason=parallel_fetch_disabled_reason,
+            )
+            phase_metrics = self._phase_metrics(
+                market_request_ms=market_request_ms,
+                my_lot_request_ms=my_lot_request_ms,
+                price_write_ms=price_write_ms,
                 cycle_started_at=cycle_started_at,
                 parallel_fetch_enabled=parallel_fetch_enabled,
                 parallel_fetch_disabled_reason=parallel_fetch_disabled_reason,
@@ -227,6 +246,7 @@ class RepricerEngine:
                 current_price,
                 None,
                 decision.competitor_price,
+                phase_metrics,
             )
 
         if not decision.should_update:
@@ -247,6 +267,15 @@ class RepricerEngine:
                 target_price=decision.target_price,
                 market_request_ms=market_request_ms,
                 my_lot_request_ms=my_lot_request_ms,
+                price_write_ms=price_write_ms,
+                cycle_started_at=cycle_started_at,
+                parallel_fetch_enabled=parallel_fetch_enabled,
+                parallel_fetch_disabled_reason=parallel_fetch_disabled_reason,
+            )
+            phase_metrics = self._phase_metrics(
+                market_request_ms=market_request_ms,
+                my_lot_request_ms=my_lot_request_ms,
+                price_write_ms=price_write_ms,
                 cycle_started_at=cycle_started_at,
                 parallel_fetch_enabled=parallel_fetch_enabled,
                 parallel_fetch_disabled_reason=parallel_fetch_disabled_reason,
@@ -258,6 +287,7 @@ class RepricerEngine:
                 current_price,
                 decision.target_price,
                 decision.competitor_price,
+                phase_metrics,
             )
 
         if self.dry_run:
@@ -286,6 +316,15 @@ class RepricerEngine:
                 target_price=decision.target_price,
                 market_request_ms=market_request_ms,
                 my_lot_request_ms=my_lot_request_ms,
+                price_write_ms=price_write_ms,
+                cycle_started_at=cycle_started_at,
+                parallel_fetch_enabled=parallel_fetch_enabled,
+                parallel_fetch_disabled_reason=parallel_fetch_disabled_reason,
+            )
+            phase_metrics = self._phase_metrics(
+                market_request_ms=market_request_ms,
+                my_lot_request_ms=my_lot_request_ms,
+                price_write_ms=price_write_ms,
                 cycle_started_at=cycle_started_at,
                 parallel_fetch_enabled=parallel_fetch_enabled,
                 parallel_fetch_disabled_reason=parallel_fetch_disabled_reason,
@@ -297,14 +336,17 @@ class RepricerEngine:
                 current_price,
                 decision.target_price,
                 decision.competitor_price,
+                phase_metrics,
             )
 
+        price_write_started_at = perf_counter()
         await self.starvell_client.update_my_lot_price(
             position.robux_amount,
             position.lot_id,
             decision.target_price,
             allow_real_write=not self.dry_run,
         )
+        price_write_ms = _elapsed_ms(price_write_started_at)
         await self._record_decision(
             position=position,
             decision=decision,
@@ -331,6 +373,15 @@ class RepricerEngine:
             target_price=decision.target_price,
             market_request_ms=market_request_ms,
             my_lot_request_ms=my_lot_request_ms,
+            price_write_ms=price_write_ms,
+            cycle_started_at=cycle_started_at,
+            parallel_fetch_enabled=parallel_fetch_enabled,
+            parallel_fetch_disabled_reason=parallel_fetch_disabled_reason,
+        )
+        phase_metrics = self._phase_metrics(
+            market_request_ms=market_request_ms,
+            my_lot_request_ms=my_lot_request_ms,
+            price_write_ms=price_write_ms,
             cycle_started_at=cycle_started_at,
             parallel_fetch_enabled=parallel_fetch_enabled,
             parallel_fetch_disabled_reason=parallel_fetch_disabled_reason,
@@ -342,6 +393,7 @@ class RepricerEngine:
             current_price,
             decision.target_price,
             decision.competitor_price,
+            phase_metrics,
         )
 
     async def _timed_market_fetch(self, position_amount: int, lot_id: str):
@@ -365,10 +417,12 @@ class RepricerEngine:
         target_price: Decimal | None,
         market_request_ms: float,
         my_lot_request_ms: float,
+        price_write_ms: float,
         cycle_started_at: float,
         parallel_fetch_enabled: bool,
         parallel_fetch_disabled_reason: str | None,
     ) -> None:
+        cycle_total_ms = _elapsed_ms(cycle_started_at)
         self.logger.info(
             "repricer_cycle_profile",
             proxy_profile=self.settings.worker_group,
@@ -380,7 +434,10 @@ class RepricerEngine:
             parallel_fetch_disabled_reason=parallel_fetch_disabled_reason,
             market_request_ms=market_request_ms,
             my_lot_request_ms=my_lot_request_ms,
-            cycle_total_ms=_elapsed_ms(cycle_started_at),
+            market_fetch_ms=market_request_ms,
+            own_lot_fetch_ms=my_lot_request_ms,
+            price_write_ms=price_write_ms,
+            cycle_total_ms=cycle_total_ms,
             current_price=str(current_price) if current_price is not None else None,
             target_price=str(target_price) if target_price is not None else None,
             competitor_price=(
@@ -389,6 +446,62 @@ class RepricerEngine:
                 else None
             ),
         )
+
+    def _phase_metrics(
+        self,
+        *,
+        market_request_ms: float,
+        my_lot_request_ms: float,
+        price_write_ms: float,
+        cycle_started_at: float,
+        parallel_fetch_enabled: bool,
+        parallel_fetch_disabled_reason: str | None,
+    ) -> dict[str, float | bool | str | None]:
+        return {
+            "market_fetch_ms": market_request_ms,
+            "own_lot_fetch_ms": my_lot_request_ms,
+            "price_write_ms": price_write_ms,
+            "cycle_total_ms": _elapsed_ms(cycle_started_at),
+            "parallel_fetch_enabled": parallel_fetch_enabled,
+            "parallel_fetch_disabled_reason": parallel_fetch_disabled_reason,
+        }
+
+    def _log_cycle_phase_profile(
+        self,
+        *,
+        position: Position,
+        result: ProcessResult,
+        db_commit_ms: float,
+    ) -> None:
+        metrics = dict(result.phase_metrics)
+        metrics["db_commit_ms"] = db_commit_ms
+        cycle_total_ms = _metric_float(metrics.get("cycle_total_ms"))
+        cycle_total_with_commit_ms = (
+            round(cycle_total_ms + db_commit_ms, 2)
+            if cycle_total_ms is not None
+            else None
+        )
+        dominant_phase, dominant_phase_ms = _dominant_phase(metrics, db_commit_ms=db_commit_ms)
+        log_context = {
+            "proxy_profile": self.settings.worker_group,
+            "position": position.robux_amount,
+            "lot_id": position.lot_id,
+            "status": result.status,
+            "reason": result.reason,
+            "market_fetch_ms": metrics.get("market_fetch_ms"),
+            "own_lot_fetch_ms": metrics.get("own_lot_fetch_ms"),
+            "price_write_ms": metrics.get("price_write_ms"),
+            "db_commit_ms": db_commit_ms,
+            "cycle_total_ms": cycle_total_ms,
+            "cycle_total_with_commit_ms": cycle_total_with_commit_ms,
+            "dominant_phase": dominant_phase,
+            "dominant_phase_ms": dominant_phase_ms,
+            "parallel_fetch_enabled": metrics.get("parallel_fetch_enabled"),
+            "parallel_fetch_disabled_reason": metrics.get("parallel_fetch_disabled_reason"),
+        }
+        self.logger.info("repricer_cycle_phase_profile", **log_context)
+        if dominant_phase_ms is not None and dominant_phase_ms >= 1000:
+            self.logger.warning("repricer_cycle_phase_dominant", **log_context)
 
     async def _record_decision(
         self,
@@ -482,3 +595,32 @@ class RepricerEngine:
 
 def _elapsed_ms(started_at: float) -> float:
     return round((perf_counter() - started_at) * 1000, 2)
+
+
+def _metric_float(value) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _dominant_phase(
+    metrics: dict[str, float | bool | str | None],
+    *,
+    db_commit_ms: float,
+) -> tuple[str | None, float | None]:
+    phase_values = {
+        "market_fetch": _metric_float(metrics.get("market_fetch_ms")),
+        "own_lot_fetch": _metric_float(metrics.get("own_lot_fetch_ms")),
+        "price_write": _metric_float(metrics.get("price_write_ms")),
+        "db_commit": db_commit_ms,
+    }
+    normalized = {
+        name: value
+        for name, value in phase_values.items()
+        if value is not None
+    }
+    if not normalized:
+        return None, None
+    phase, value = max(normalized.items(), key=lambda item: item[1])
+    return phase, round(value, 2)
