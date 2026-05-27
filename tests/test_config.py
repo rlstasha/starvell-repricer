@@ -130,6 +130,7 @@ def test_market_http_transport_defaults_are_bounded() -> None:
     assert settings.market_http_timeout_seconds == 15.0
     assert settings.market_http_max_connections == 20
     assert settings.market_http_max_keepalive_connections == 10
+    assert settings.my_lot_state_cache_ttl_seconds == 10.0
 
 
 def test_price_write_settings_default_to_safe_analysis_mode() -> None:

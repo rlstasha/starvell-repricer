@@ -49,6 +49,7 @@ class Settings(BaseSettings):
     market_http_timeout_seconds: float = Field(default=15.0, ge=1)
     market_http_max_connections: int = Field(default=20, ge=1)
     market_http_max_keepalive_connections: int = Field(default=10, ge=0)
+    my_lot_state_cache_ttl_seconds: float = Field(default=10.0, ge=0, le=60)
     enable_real_price_writes: bool = False
     market_update_lot_price_url: str = ""
     market_update_lot_price_method: str = "POST"

@@ -153,6 +153,7 @@ class StarvellClient:
         self._http2_disabled = False
         self._market_category_cache: dict[str, tuple[float, MarketOffersFetchResult]] = {}
         self._market_category_inflight: dict[str, asyncio.Task[MarketOffersFetchResult]] = {}
+        self._own_lot_cache: dict[str, tuple[float, OwnLot]] = {}
 
     async def __aenter__(self) -> "StarvellClient":
         await self._ensure_http_client()
@@ -557,21 +558,60 @@ class StarvellClient:
             source=result.source,
         )
 
+    def _cached_own_lot(self, lot_id: str) -> OwnLot | None:
+        ttl = self.settings.my_lot_state_cache_ttl_seconds
+        if ttl <= 0:
+            return None
+        cached = self._own_lot_cache.get(lot_id)
+        if cached is None:
+            return None
+        cached_at, own_lot = cached
+        age_seconds = time.monotonic() - cached_at
+        if age_seconds > ttl:
+            self._own_lot_cache.pop(lot_id, None)
+            return None
+        if age_seconds > 15:
+            self.logger.warning(
+                "starvell_own_lot_cache_age_high",
+                lot_id=lot_id,
+                cache_age_seconds=round(age_seconds, 2),
+            )
+        self.logger.info(
+            "starvell_own_lot_cache_hit",
+            lot_id=lot_id,
+            cache_age_seconds=round(age_seconds, 2),
+        )
+        return own_lot
+
+    def _remember_own_lot(self, own_lot: OwnLot) -> None:
+        if self.settings.my_lot_state_cache_ttl_seconds <= 0 or not own_lot.lot_id:
+            return
+        self._own_lot_cache[str(own_lot.lot_id)] = (time.monotonic(), own_lot)
+
+    def _forget_own_lot(self, lot_id: str | None) -> None:
+        if lot_id:
+            self._own_lot_cache.pop(str(lot_id), None)
+
     async def get_my_lot(self, position_amount: int, lot_id: str | None) -> OwnLot | None:
         """Fetch own lot page by lot_id using safe GET and parse current price."""
         if not lot_id:
             return None
+        if cached_lot := self._cached_own_lot(str(lot_id)):
+            return cached_lot
 
         response = await self._request(
             "GET",
             f"/offers/{lot_id}",
             request_type="my_lot",
         )
-        return parse_starvell_own_lot(
+        own_lot = parse_starvell_own_lot(
             response.text,
             position_amount=position_amount,
             lot_id=lot_id,
         )
+        if own_lot:
+            self._remember_own_lot(own_lot)
+        return own_lot
 
     async def get_my_lots(self) -> list[MyLotSummary]:
         """Fetch own active lots through the configured safe GET endpoint."""
@@ -650,6 +690,7 @@ class StarvellClient:
                 content_type=request_content_type,
             )
         except httpx.HTTPStatusError as exc:
+            self._forget_own_lot(str(lot_id))
             debug_extra = (
                 _debug_response_fields(exc.response, self.settings)
                 if self.settings.price_write_discovery
@@ -672,6 +713,7 @@ class StarvellClient:
             )
             raise
         except Exception as exc:
+            self._forget_own_lot(str(lot_id))
             self.logger.warning(
                 "price_update_failed",
                 position=position_amount,
@@ -708,6 +750,14 @@ class StarvellClient:
             variant=variant_name,
             proxy=self.proxy_profile or "direct",
             status="success",
+        )
+        self._remember_own_lot(
+            OwnLot(
+                position_amount=position_amount,
+                price=new_price,
+                lot_id=str(lot_id),
+                raw_payload=raw_payload,
+            )
         )
         return UpdateResult(success=True, raw_payload=raw_payload)
 

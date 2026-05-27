@@ -551,6 +551,93 @@ async def test_get_my_lot_uses_safe_get_offer_page() -> None:
 
 
 @pytest.mark.asyncio
+async def test_get_my_lot_uses_short_cache() -> None:
+    calls = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(
+            200,
+            content="""
+            <script id="__NEXT_DATA__" type="application/json">
+            {"props":{"pageProps":{"offer":{"id":1996,"price":"79.30000","subCategory":{"name":"80 робуксов"}}}}}
+            </script>
+            """.encode("utf-8"),
+            headers={"content-type": "text/html; charset=utf-8"},
+        )
+
+    client = httpx.AsyncClient(
+        base_url="https://starvell.example",
+        transport=httpx.MockTransport(handler),
+    )
+    settings = Settings(
+        _env_file=None,
+        market_base_url="https://starvell.example",
+        my_lot_state_cache_ttl_seconds=10,
+    )
+
+    async with StarvellClient(settings, InMemoryFixedWindowRateLimiter(), client) as starvell:
+        first = await starvell.get_my_lot(80, "1996")
+        second = await starvell.get_my_lot(80, "1996")
+
+    assert calls == 1
+    assert first is not None
+    assert second is not None
+    assert first.price == Decimal("79.30000")
+    assert second.price == Decimal("79.30000")
+
+
+@pytest.mark.asyncio
+async def test_successful_price_update_refreshes_my_lot_cache() -> None:
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.method == "GET":
+            return httpx.Response(
+                200,
+                content="""
+                <script id="__NEXT_DATA__" type="application/json">
+                {"props":{"pageProps":{"offer":{"id":2000,"price":"312.40000","subCategory":{"name":"500 робуксов"}}}}}
+                </script>
+                """.encode("utf-8"),
+                headers={"content-type": "text/html; charset=utf-8"},
+            )
+        assert request.method == "POST"
+        return httpx.Response(200, json={"success": True})
+
+    client = httpx.AsyncClient(
+        base_url="https://starvell.example",
+        transport=httpx.MockTransport(handler),
+    )
+    settings = Settings(
+        _env_file=None,
+        market_base_url="https://starvell.example",
+        enable_real_price_writes=True,
+        dry_run=False,
+        market_update_lot_price_url="/api/offers/{lot_id}/partial-update",
+        market_update_price_payload_style="price",
+    )
+
+    async with StarvellClient(settings, InMemoryFixedWindowRateLimiter(), client) as starvell:
+        first = await starvell.get_my_lot(500, "2000")
+        await starvell.update_my_lot_price(
+            500,
+            "2000",
+            Decimal("314.40000"),
+            allow_real_write=True,
+        )
+        second = await starvell.get_my_lot(500, "2000")
+
+    assert [request.method for request in requests] == ["GET", "POST"]
+    assert first is not None
+    assert second is not None
+    assert first.price == Decimal("312.40000")
+    assert second.price == Decimal("314.40000")
+
+
+@pytest.mark.asyncio
 async def test_update_my_lot_price_blocks_when_real_writes_disabled() -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         raise AssertionError(f"Unexpected request: {request.url}")
