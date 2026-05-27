@@ -74,8 +74,8 @@ class Settings(BaseSettings):
     request_min_delay_ms: int = Field(default=300, ge=0)
     request_max_delay_ms: int = Field(default=5000, ge=0)
     request_jitter_ms: int = Field(default=200, ge=0)
-    fast1_min_delay_ms: int | None = Field(default=None, ge=0)
-    fast1_jitter_ms: int | None = Field(default=None, ge=0)
+    fast1_min_delay_ms: int | None = Field(default=200, ge=0)
+    fast1_jitter_ms: int | None = Field(default=100, ge=0)
     fast2_min_delay_ms: int | None = Field(default=None, ge=0)
     fast2_jitter_ms: int | None = Field(default=None, ge=0)
     slow_min_delay_ms: int | None = Field(default=None, ge=0)
@@ -87,17 +87,17 @@ class Settings(BaseSettings):
     safe_mode_cooldown_seconds: float = Field(default=300.0, ge=1)
 
     request_limit_per_minute: int = Field(default=100, ge=1)
-    global_request_limit_per_minute: int = Field(default=300, ge=1)
+    global_request_limit_per_minute: int = Field(default=700, ge=1)
     token_limit_mode: bool = True
     rate_limiter_soft_cap_enabled: bool = True
-    account_effective_limit_per_minute: int = Field(default=300, ge=1)
+    account_effective_limit_per_minute: int = Field(default=700, ge=1)
     account_min_limit_per_minute: int = Field(default=60, ge=1)
     account_limit_decrease_step_per_minute: int = Field(default=30, ge=1)
     account_limit_ramp_step_per_minute: int = Field(default=10, ge=1)
     account_limit_ramp_idle_seconds: float = Field(default=600.0, ge=1)
-    worker_fast_1_request_limit_per_minute: int = Field(default=100, ge=1)
-    worker_fast_2_request_limit_per_minute: int = Field(default=100, ge=1)
-    worker_slow_request_limit_per_minute: int = Field(default=100, ge=1)
+    worker_fast_1_request_limit_per_minute: int = Field(default=280, ge=1)
+    worker_fast_2_request_limit_per_minute: int = Field(default=280, ge=1)
+    worker_slow_request_limit_per_minute: int = Field(default=140, ge=1)
     worker_fast_1_positions: str = "500,800,1000"
     worker_fast_2_positions: str = "400,1200,1700,2000"
     worker_slow_positions: str = "40,80,200,2100,2500,3600,4500,10000,22500"
@@ -120,9 +120,9 @@ class Settings(BaseSettings):
     fast1_idle_sleep_seconds: float = Field(default=0.1, ge=0.01)
     fast2_idle_sleep_seconds: float = Field(default=0.1, ge=0.01)
     slow_idle_sleep_seconds: float = Field(default=1.0, ge=0.01)
-    scheduler_max_concurrent_positions: int = Field(default=1, ge=1, le=10)
-    ultra_fast_min_interval_seconds: float = Field(default=0.8, ge=0.01)
-    fast1_min_interval_seconds: float = Field(default=1.5, ge=0.01)
+    scheduler_max_concurrent_positions: int = Field(default=2, ge=1, le=10)
+    ultra_fast_min_interval_seconds: float = Field(default=0.4, ge=0.01)
+    fast1_min_interval_seconds: float = Field(default=0.8, ge=0.01)
     fast2_min_interval_seconds: float = Field(default=2.0, ge=0.01)
     hot_mode_enabled: bool = False
     hot_mode_min_interval_seconds: float = Field(default=0.25, ge=0.01)

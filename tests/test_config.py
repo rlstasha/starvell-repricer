@@ -93,8 +93,12 @@ def test_account_effective_limit_defaults_to_full_proxy_capacity() -> None:
 
     assert settings.token_limit_mode is True
     assert settings.rate_limiter_soft_cap_enabled is True
-    assert settings.account_effective_limit_per_minute == 300
+    assert settings.global_request_limit_per_minute == 700
+    assert settings.account_effective_limit_per_minute == 700
     assert settings.account_min_limit_per_minute == 60
+    assert settings.proxy_request_limits["fast_1"] == 280
+    assert settings.proxy_request_limits["fast_2"] == 280
+    assert settings.proxy_request_limits["slow"] == 140
 
 
 def test_request_pacing_defaults_are_safe_without_group_overrides() -> None:
@@ -102,12 +106,14 @@ def test_request_pacing_defaults_are_safe_without_group_overrides() -> None:
 
     assert settings.request_min_delay_ms == 300
     assert settings.request_jitter_ms == 200
-    assert settings.request_delay_for_group("fast_1") == (300, 200)
+    assert settings.request_delay_for_group("fast_1") == (200, 100)
+    assert settings.request_delay_for_group("fast_2") == (300, 200)
+    assert settings.scheduler_max_concurrent_positions == 2
     assert settings.scheduler_idle_sleep_for_group("fast_1") == 0.1
     assert settings.scheduler_idle_sleep_for_group("fast_2") == 0.1
     assert settings.scheduler_idle_sleep_for_group("slow") == 1.0
-    assert settings.ultra_fast_min_interval_seconds == 0.8
-    assert settings.fast1_min_interval_seconds == 1.5
+    assert settings.ultra_fast_min_interval_seconds == 0.4
+    assert settings.fast1_min_interval_seconds == 0.8
     assert settings.fast2_min_interval_seconds == 2.0
     assert settings.hot_mode_enabled is False
     assert settings.hot_mode_min_interval_seconds == 0.25
