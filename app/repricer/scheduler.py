@@ -117,6 +117,7 @@ class RepricerScheduler:
         self.last_429_at: datetime | None = None
         self.last_limit_ramp_monotonic = time.monotonic()
         self.rate_limiter = self._build_rate_limiter()
+        self._last_limiter_snapshot_logged_at = 0.0
         self.logger = get_logger(__name__)
 
     async def run_forever(self) -> None:
@@ -734,6 +735,10 @@ class RepricerScheduler:
             if hasattr(self.rate_limiter, "account_snapshot")
             else None
         )
+        self._log_limiter_snapshot(
+            profile_usage=profile_usage,
+            account_snapshot=account_snapshot,
+        )
         await WorkerHeartbeatRepository(session).upsert(
             worker_group=self.settings.worker_group,
             hostname=self.hostname,
@@ -770,6 +775,58 @@ class RepricerScheduler:
             last_429_at=self.last_429_at,
             safe_mode=self._safe_mode_active(),
             dry_run=dry_run,
+        )
+
+    def _log_limiter_snapshot(
+        self,
+        *,
+        profile_usage: int,
+        account_snapshot,
+    ) -> None:
+        now = time.time()
+        if now - self._last_limiter_snapshot_logged_at < 10:
+            return
+        self._last_limiter_snapshot_logged_at = now
+        account_configured = (
+            account_snapshot.configured_limit_per_minute
+            if account_snapshot
+            else self.settings.global_request_limit_per_minute
+        )
+        account_effective = (
+            account_snapshot.effective_limit_per_minute
+            if account_snapshot
+            else self.settings.global_request_limit_per_minute
+        )
+        account_usage = account_snapshot.current_usage if account_snapshot else 0
+        self.logger.info(
+            "repricer_limiter_snapshot",
+            worker_group=self.settings.worker_group,
+            soft_cap_enabled=self.settings.rate_limiter_soft_cap_enabled,
+            token_limit_mode=self.settings.token_limit_mode,
+            profile_configured_limit_per_minute=self.configured_request_limit_per_minute,
+            profile_effective_limit_per_minute=self.effective_request_limit_per_minute,
+            profile_requests_in_current_window=profile_usage,
+            account_configured_limit_per_minute=account_configured,
+            account_effective_limit_per_minute=account_effective,
+            account_requests_in_current_window=account_usage,
+            active_account_ceiling_per_minute=account_effective,
+            account_backoff_active=bool(account_snapshot and account_snapshot.backoff_active),
+            account_last_429_at=(
+                account_snapshot.last_429_at.isoformat()
+                if account_snapshot and account_snapshot.last_429_at
+                else None
+            ),
+            account_retry_after_until=(
+                account_snapshot.retry_after_until.isoformat()
+                if account_snapshot and account_snapshot.retry_after_until
+                else None
+            ),
+            usage_window_reset_seconds=round(60 - (now % 60), 2),
+            burst_limit_per_second=(
+                self.settings.request_burst_limit
+                if self.settings.rate_limiter_soft_cap_enabled
+                else None
+            ),
         )
 
     async def _update_error_state(self, status: str, reason: str | None) -> None:

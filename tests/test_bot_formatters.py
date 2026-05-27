@@ -132,7 +132,7 @@ def test_worker_servers_show_new_fast_split_and_frequency() -> None:
     assert "📊 Прокси и лимиты" in text
     assert "🚀 Fast 1" in text
     assert "500 · 800 · 1000" in text
-    assert "Частота: 1.5–2.2 сек" in text
+    assert "Частота: 0.8–2.2 сек" in text
     assert "🚀 Fast 2" in text
     assert "400 · 1200 · 1700 · 2000" in text
     assert "Частота: 2.0–3.0 сек" in text
@@ -190,7 +190,7 @@ def test_position_card_uses_proxy_group_frequency_and_ip() -> None:
 
     assert "🌐 Прокси-группа: Fast 1" in text
     assert "🌍 IP: 45.132.20.115" in text
-    assert "⏱ Частота: 0.8–1.3 сек" in text
+    assert "⏱ Частота: 0.4–1.3 сек" in text
     assert "High-позиция" not in text
     assert "Normal" not in text
 
@@ -326,7 +326,7 @@ def test_status_overview_is_short_and_proxy_aware() -> None:
     assert "🤖 Worker:\n✅ активен" in text
     assert "💰 Реальные цены:\n✅ активно" in text
     assert "🌐 Прокси:\n✅ активны (1/3)" in text
-    assert "🚦 Нагрузка:\n258/300" in text
+    assert "🚦 Нагрузка:\n258/700" in text
     assert "🧯 Ошибки:\nнет" in text
     assert "800 робуксов" not in text
     assert "580.70 ₽" not in text
@@ -341,7 +341,7 @@ def test_proxy_screen_contains_only_proxy_health() -> None:
         hostname="server",
         public_ip="45.132.20.115",
         assigned_positions=[500, 800, 1000],
-        request_limit_per_minute=100,
+        request_limit_per_minute=280,
         last_seen_at=datetime.now(UTC),
         status="success",
         dry_run=False,
@@ -357,8 +357,8 @@ def test_proxy_screen_contains_only_proxy_health() -> None:
     assert "🚀 Fast 1" in text
     assert "IP:\n45.132.20.115" in text
     assert "500 · 800 · 1000" in text
-    assert "Лимит:\n100/мин" in text
-    assert "Нагрузка:\n0/100" in text
+    assert "Лимит:\n280/мин" in text
+    assert "Нагрузка:\n0/280" in text
     assert "Статус:\n✅ активен" in text
     assert "Пропускная способность" not in text
 
@@ -370,7 +370,7 @@ def test_proxy_screen_is_paginated_one_profile_per_page() -> None:
         hostname="server",
         public_ip="45.132.20.205",
         assigned_positions=[400, 1200, 1700, 2000],
-        request_limit_per_minute=100,
+        request_limit_per_minute=280,
         profile_request_usage_per_minute=89,
         current_delay_seconds=2.6,
         last_seen_at=datetime.now(UTC),
@@ -389,7 +389,7 @@ def test_proxy_screen_is_paginated_one_profile_per_page() -> None:
     assert "🚀 Fast 2" in text
     assert "45.132.20.205" in text
     assert "400 · 1200 · 1700 · 2000" in text
-    assert "Нагрузка:\n89/100" in text
+    assert "Нагрузка:\n89/280" in text
     assert "Текущий интервал:\n2.6 сек" in text
     assert "Fast 1" not in text
     assert "Slow" not in text
@@ -418,10 +418,10 @@ def test_limits_screen_uses_russian_labels() -> None:
         hostname="server",
         public_ip="45.132.20.115",
         assigned_positions=[500, 800, 1000],
-        request_limit_per_minute=100,
+        request_limit_per_minute=280,
         profile_request_usage_per_minute=82,
         account_request_usage_per_minute=258,
-        account_effective_limit_per_minute=300,
+        account_effective_limit_per_minute=700,
         last_seen_at=datetime.now(UTC),
         status="success",
         dry_run=False,
@@ -437,8 +437,8 @@ def test_limits_screen_uses_russian_labels() -> None:
     assert "🚦 Лимиты" in text
     assert "🌐 Общая мощность:" in text
     assert "🧠 Лимит аккаунта:" in text
-    assert "Fast1: 82/100" in text
-    assert "Итого:\n258/300" in text
+    assert "Fast1: 82/280" in text
+    assert "Итого:\n258/700" in text
     assert "📉 Замедление:\nнет" in text
     assert "Последний 429" not in text
     assert "Proxy capacity" not in text
@@ -466,9 +466,9 @@ def test_scheduler_screen_is_separate_from_limits() -> None:
 
     assert "🧠 Планировщик" in text
     assert "🚀 Fast1" in text
-    assert "Интервал:\n1.5–2.7 сек" in text
+    assert "Интервал:\n0.8–2.7 сек" in text
     assert "⚡ 500 робуксов:" in text
-    assert "0.8–1.3 сек через Fast 1" in text
+    assert "0.4–1.3 сек через Fast 1" in text
     assert "Текущий:\n2.3 сек" in text
     assert "Нагрузка" not in text
 
@@ -626,7 +626,7 @@ def test_position_card_shows_market_activity_from_schedule_state() -> None:
     )
 
     assert "🧠 Активность рынка: высокая" in text
-    assert "⏱ Частота: 0.8–1.3 сек" in text
+    assert "⏱ Частота: 0.4–1.3 сек" in text
     assert "• Текущая: 1.9 сек" in text
 
 

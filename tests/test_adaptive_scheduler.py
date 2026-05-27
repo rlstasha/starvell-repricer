@@ -87,7 +87,7 @@ def test_dynamic_delay_avoids_identical_repeats() -> None:
 
 
 def test_display_ranges_match_proxy_profiles() -> None:
-    assert display_interval_range("fast_1") == (1.5, 2.2)
+    assert display_interval_range("fast_1") == (0.8, 2.2)
     assert display_interval_range("fast_2") == (2.0, 3.0)
     assert display_interval_range("slow") == (4.5, 6.5)
 
@@ -119,10 +119,10 @@ def test_500_position_uses_ultrafast_timing_inside_fast_1() -> None:
         random_uniform=lambda low, high: high,
     )
 
-    assert timing.min_seconds == 0.8
+    assert timing.min_seconds == 0.4
     assert timing.max_seconds == 1.3
     assert decision.delay_seconds <= 1.3
-    assert display_interval_range("fast_1", position_amount=500) == (0.8, 1.3)
+    assert display_interval_range("fast_1", position_amount=500) == (0.4, 1.3)
 
 
 def test_fast_interval_minimum_can_be_overridden_from_env(monkeypatch) -> None:

@@ -716,6 +716,7 @@ def format_technical_status(
     global_limit: int,
     recent_errors: list[tuple[PriceUpdateLog, Position | None]],
     group_infos: list[WorkerGroupInfo] | None = None,
+    settings: object | None = None,
 ) -> str:
     current_groups = {info.name for info in (group_infos or [])}
     lines = [
@@ -728,6 +729,9 @@ def format_technical_status(
                 f"global_limit={global_limit}",
             ]
         ),
+        "",
+        "Runtime config:",
+        *_quote_lines(_runtime_config_lines(settings)),
         "",
         "Heartbeats:",
     ]
@@ -745,7 +749,11 @@ def format_technical_status(
                     f"public_ip={heartbeat.public_ip or '—'}",
                     f"profile_usage={_profile_usage(heartbeat)}",
                     f"effective_limit={getattr(heartbeat, 'effective_request_limit_per_minute', None) or '—'}",
+                    f"account_effective_limit={getattr(heartbeat, 'account_effective_limit_per_minute', None) or '—'}",
+                    f"account_usage={getattr(heartbeat, 'account_request_usage_per_minute', None) or 0}",
+                    f"account_backoff={getattr(heartbeat, 'account_backoff_active', False)}",
                     f"last429={dt(getattr(heartbeat, 'last_429_at', None))}",
+                    f"account_last429={dt(getattr(heartbeat, 'account_last_429_at', None))}",
                     f"safe_mode={heartbeat.safe_mode}",
                 ]
             )
@@ -779,6 +787,27 @@ def format_technical_status(
         amount = position.robux_amount if position else log.position_id
         lines.extend(_quote_lines([f"{dt(log.created_at)} position={amount} raw_reason={log.reason or '—'}"]))
     return "\n".join(lines)
+
+
+def _runtime_config_lines(settings: object | None) -> list[str]:
+    if settings is None:
+        return ["—"]
+    return [
+        f"GLOBAL_REQUEST_LIMIT_PER_MINUTE={getattr(settings, 'global_request_limit_per_minute', '—')}",
+        f"ACCOUNT_EFFECTIVE_LIMIT_PER_MINUTE={getattr(settings, 'account_effective_limit_per_minute', '—')}",
+        f"SCHEDULER_MAX_CONCURRENT_POSITIONS={getattr(settings, 'scheduler_max_concurrent_positions', '—')}",
+        f"ULTRA_FAST_MIN_INTERVAL_SECONDS={getattr(settings, 'ultra_fast_min_interval_seconds', '—')}",
+        f"FAST1_MIN_INTERVAL_SECONDS={getattr(settings, 'fast1_min_interval_seconds', '—')}",
+        f"FAST1_MIN_DELAY_MS={getattr(settings, 'fast1_min_delay_ms', '—')}",
+        f"FAST1_JITTER_MS={getattr(settings, 'fast1_jitter_ms', '—')}",
+        f"MY_LOT_STATE_CACHE_TTL_SECONDS={getattr(settings, 'my_lot_state_cache_ttl_seconds', '—')}",
+        f"RATE_LIMITER_SOFT_CAP_ENABLED={getattr(settings, 'rate_limiter_soft_cap_enabled', '—')}",
+        f"HOT_MODE_ENABLED={getattr(settings, 'hot_mode_enabled', '—')}",
+        f"POST_UPDATE_INTERVAL_MULTIPLIER={getattr(settings, 'post_update_interval_multiplier', '—')}",
+        f"WORKER_FAST_1_REQUEST_LIMIT_PER_MINUTE={getattr(settings, 'worker_fast_1_request_limit_per_minute', '—')}",
+        f"WORKER_FAST_2_REQUEST_LIMIT_PER_MINUTE={getattr(settings, 'worker_fast_2_request_limit_per_minute', '—')}",
+        f"WORKER_SLOW_REQUEST_LIMIT_PER_MINUTE={getattr(settings, 'worker_slow_request_limit_per_minute', '—')}",
+    ]
 
 
 def format_status(

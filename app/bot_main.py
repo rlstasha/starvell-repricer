@@ -65,7 +65,28 @@ async def main() -> None:
     dispatcher.include_router(positions_router)
     dispatcher.include_router(settings_router)
 
-    logger.info("repricer_bot_started")
+    logger.info(
+        "repricer_bot_started",
+        global_request_limit_per_minute=settings.global_request_limit_per_minute,
+        account_effective_limit_per_minute=settings.account_effective_limit_per_minute,
+        request_min_delay_ms=settings.request_min_delay_ms,
+        request_jitter_ms=settings.request_jitter_ms,
+        fast1_min_delay_ms=settings.fast1_min_delay_ms,
+        fast1_jitter_ms=settings.fast1_jitter_ms,
+        my_lot_state_cache_ttl_seconds=settings.my_lot_state_cache_ttl_seconds,
+        rate_limiter_soft_cap_enabled=settings.rate_limiter_soft_cap_enabled,
+        scheduler_max_concurrent_positions=settings.scheduler_max_concurrent_positions,
+        ultra_fast_min_interval_seconds=settings.ultra_fast_min_interval_seconds,
+        fast1_min_interval_seconds=settings.fast1_min_interval_seconds,
+        hot_mode_enabled=settings.hot_mode_enabled,
+        post_update_interval_multiplier=settings.post_update_interval_multiplier,
+        worker_fast_1_request_limit_per_minute=settings.worker_fast_1_request_limit_per_minute,
+        worker_fast_2_request_limit_per_minute=settings.worker_fast_2_request_limit_per_minute,
+        worker_slow_request_limit_per_minute=settings.worker_slow_request_limit_per_minute,
+        proxy_fast_1_request_limit_per_minute=settings.proxy_request_limits["fast_1"],
+        proxy_fast_2_request_limit_per_minute=settings.proxy_request_limits["fast_2"],
+        proxy_slow_request_limit_per_minute=settings.proxy_request_limits["slow"],
+    )
     try:
         await _run_polling_forever(dispatcher, bot)
     finally:

@@ -361,8 +361,8 @@ async def test_worker_scheduler_reduces_effective_limit_after_429() -> None:
 
     await scheduler._update_error_state("failed", "rate_limited")
 
-    assert scheduler.effective_request_limit_per_minute == 90
-    assert scheduler.rate_limiter.profile_limiter.limit == 90
+    assert scheduler.effective_request_limit_per_minute == 270
+    assert scheduler.rate_limiter.profile_limiter.limit == 270
     assert scheduler.last_429_at is not None
     assert scheduler._backoff_active() is True
 
