@@ -69,6 +69,12 @@ class Settings(BaseSettings):
     request_min_delay_ms: int = Field(default=100, ge=0)
     request_max_delay_ms: int = Field(default=5000, ge=0)
     request_jitter_ms: int = Field(default=50, ge=0)
+    fast1_min_delay_ms: int | None = Field(default=None, ge=0)
+    fast1_jitter_ms: int | None = Field(default=None, ge=0)
+    fast2_min_delay_ms: int | None = Field(default=None, ge=0)
+    fast2_jitter_ms: int | None = Field(default=None, ge=0)
+    slow_min_delay_ms: int | None = Field(default=None, ge=0)
+    slow_jitter_ms: int | None = Field(default=None, ge=0)
     request_backoff_factor: float = Field(default=2.0, ge=1.0)
     safe_mode_enabled: bool = True
     safe_mode_on_429: bool = True
@@ -105,6 +111,9 @@ class Settings(BaseSettings):
     high_priority_percent: int = Field(default=70, ge=0, le=100)
     normal_priority_percent: int = Field(default=30, ge=0, le=100)
     scheduler_idle_sleep_seconds: float = Field(default=1.0, ge=0.1)
+    fast1_idle_sleep_seconds: float = Field(default=0.1, ge=0.01)
+    fast2_idle_sleep_seconds: float = Field(default=0.1, ge=0.01)
+    slow_idle_sleep_seconds: float = Field(default=1.0, ge=0.01)
     scheduler_max_concurrent_positions: int = Field(default=2, ge=1, le=10)
 
     @field_validator("owner_telegram_ids")
@@ -214,6 +223,13 @@ class Settings(BaseSettings):
             raise ValueError("HIGH_PRIORITY_PERCENT and NORMAL_PRIORITY_PERCENT must sum to 100")
         if self.request_min_delay_ms > self.request_max_delay_ms:
             raise ValueError("REQUEST_MIN_DELAY_MS must be <= REQUEST_MAX_DELAY_MS")
+        for value_name, value in (
+            ("FAST1_MIN_DELAY_MS", self.fast1_min_delay_ms),
+            ("FAST2_MIN_DELAY_MS", self.fast2_min_delay_ms),
+            ("SLOW_MIN_DELAY_MS", self.slow_min_delay_ms),
+        ):
+            if value is not None and value > self.request_max_delay_ms:
+                raise ValueError(f"{value_name} must be <= REQUEST_MAX_DELAY_MS")
         if self.account_min_limit_per_minute > self.account_effective_limit_per_minute:
             raise ValueError(
                 "ACCOUNT_MIN_LIMIT_PER_MINUTE must be <= ACCOUNT_EFFECTIVE_LIMIT_PER_MINUTE"
@@ -280,6 +296,29 @@ class Settings(BaseSettings):
         if group in ALL_WORKER_GROUPS:
             return self.proxy_request_limits[group]
         return self.request_limit_per_minute
+
+    def request_delay_for_group(self, worker_group: str | None = None) -> tuple[int, int]:
+        group = normalize_worker_group(worker_group or self.worker_group)
+        overrides = {
+            WORKER_GROUP_FAST_1: (self.fast1_min_delay_ms, self.fast1_jitter_ms),
+            WORKER_GROUP_FAST_2: (self.fast2_min_delay_ms, self.fast2_jitter_ms),
+            WORKER_GROUP_SLOW: (self.slow_min_delay_ms, self.slow_jitter_ms),
+        }
+        min_delay, jitter = overrides.get(group, (None, None))
+        return (
+            self.request_min_delay_ms if min_delay is None else min_delay,
+            self.request_jitter_ms if jitter is None else jitter,
+        )
+
+    def scheduler_idle_sleep_for_group(self, worker_group: str | None = None) -> float:
+        group = normalize_worker_group(worker_group or self.worker_group)
+        if group == WORKER_GROUP_FAST_1:
+            return self.fast1_idle_sleep_seconds
+        if group == WORKER_GROUP_FAST_2:
+            return self.fast2_idle_sleep_seconds
+        if group == WORKER_GROUP_SLOW:
+            return self.slow_idle_sleep_seconds
+        return self.scheduler_idle_sleep_seconds
 
     @property
     def worker_group_positions(self) -> dict[str, tuple[int, ...]]:

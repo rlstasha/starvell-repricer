@@ -101,6 +101,26 @@ def test_request_pacing_defaults_are_fast_when_proxies_are_healthy() -> None:
 
     assert settings.request_min_delay_ms == 100
     assert settings.request_jitter_ms == 50
+    assert settings.request_delay_for_group("fast_1") == (100, 50)
+    assert settings.scheduler_idle_sleep_for_group("fast_1") == 0.1
+    assert settings.scheduler_idle_sleep_for_group("fast_2") == 0.1
+    assert settings.scheduler_idle_sleep_for_group("slow") == 1.0
+
+
+def test_request_pacing_can_be_overridden_per_worker_group() -> None:
+    settings = Settings(
+        _env_file=None,
+        request_min_delay_ms=100,
+        request_jitter_ms=50,
+        fast1_min_delay_ms=25,
+        fast1_jitter_ms=10,
+        fast2_min_delay_ms=75,
+        slow_min_delay_ms=250,
+    )
+
+    assert settings.request_delay_for_group("fast_1") == (25, 10)
+    assert settings.request_delay_for_group("fast_2") == (75, 50)
+    assert settings.request_delay_for_group("slow") == (250, 50)
 
 
 def test_price_write_settings_default_to_safe_analysis_mode() -> None:

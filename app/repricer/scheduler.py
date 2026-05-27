@@ -156,7 +156,7 @@ class RepricerScheduler:
                             dry_run=self.settings.dry_run,
                         )
                         await session.commit()
-                    await asyncio.sleep(self.settings.scheduler_idle_sleep_seconds)
+                    await asyncio.sleep(self._idle_sleep_seconds())
 
     async def run_once(self, starvell_client: StarvellClient) -> None:
         if self._safe_mode_active():
@@ -181,7 +181,7 @@ class RepricerScheduler:
                     session,
                     "Нет включенных позиций этой группы",
                 )
-                await asyncio.sleep(self.settings.scheduler_idle_sleep_seconds)
+                await asyncio.sleep(self._idle_sleep_seconds())
                 return
 
             await self._sync_schedule(positions, session)
@@ -416,8 +416,11 @@ class RepricerScheduler:
             if state is None or state.next_run_monotonic != next_run:
                 heapq.heappop(self.schedule_heap)
                 continue
-            return max(min(next_run - time.monotonic(), self.settings.scheduler_idle_sleep_seconds), 0.1)
-        return self.settings.scheduler_idle_sleep_seconds
+            return max(min(next_run - time.monotonic(), self._idle_sleep_seconds()), 0.1)
+        return self._idle_sleep_seconds()
+
+    def _idle_sleep_seconds(self) -> float:
+        return self.settings.scheduler_idle_sleep_for_group(self.settings.worker_group)
 
     def _postpone_locked_position(self, amount: int) -> None:
         state = self.schedule_runtime.get(amount)
@@ -694,13 +697,14 @@ class RepricerScheduler:
             window_seconds=1,
             key_prefix=f"repricer:burst:{self.settings.worker_group}",
         )
+        min_delay_ms, jitter_ms = self.settings.request_delay_for_group(self.settings.worker_group)
         return CompositeRateLimiter(
             profile_limiter=profile,
             global_limiter=global_limiter,
             burst_limiter=burst,
-            min_delay_ms=self.settings.request_min_delay_ms,
+            min_delay_ms=min_delay_ms,
             max_delay_ms=self.settings.request_max_delay_ms,
-            jitter_ms=self.settings.request_jitter_ms,
+            jitter_ms=jitter_ms,
             backoff_factor=self.settings.request_backoff_factor,
         )
 

@@ -82,6 +82,26 @@ def test_500_position_uses_ultrafast_timing_inside_fast_1() -> None:
     assert display_interval_range("fast_1", position_amount=500) == (0.8, 1.3)
 
 
+def test_fast_interval_minimum_can_be_overridden_from_env(monkeypatch) -> None:
+    monkeypatch.setenv("FAST1_MIN_INTERVAL_SECONDS", "1.2")
+
+    timing = timing_for_position("fast_1", 800)
+
+    assert timing.min_seconds == 1.2
+    assert timing.normal_min_seconds == 1.2
+    assert display_interval_range("fast_1") == (1.2, 2.2)
+
+
+def test_ultrafast_interval_minimum_can_be_overridden_from_env(monkeypatch) -> None:
+    monkeypatch.setenv("ULTRA_FAST_MIN_INTERVAL_SECONDS", "0.6")
+
+    timing = timing_for_position("fast_1", ULTRA_FAST_POSITION_AMOUNT)
+
+    assert timing.min_seconds == 0.6
+    assert timing.normal_min_seconds == 0.6
+    assert display_interval_range("fast_1", position_amount=500) == (0.6, 1.3)
+
+
 def test_min_price_bounce_reason_keeps_scheduler_active() -> None:
     score = update_change_score(0.2, Decimal("90"), Decimal("90"))
     score = apply_strategy_activity_floor(score, "min_price_bounce_to_upper_competitor")

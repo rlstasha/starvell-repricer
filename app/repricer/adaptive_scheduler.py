@@ -1,3 +1,4 @@
+import os
 import random
 from dataclasses import dataclass
 from decimal import Decimal
@@ -88,12 +89,15 @@ DEFAULT_TIMING = ProfileTiming(
 
 
 def timing_for_group(worker_group: str) -> ProfileTiming:
-    return PROFILE_TIMINGS.get(worker_group, DEFAULT_TIMING)
+    timing = PROFILE_TIMINGS.get(worker_group, DEFAULT_TIMING)
+    if worker_group == WORKER_GROUP_FAST_1:
+        return _with_min_interval_override(timing, "FAST1_MIN_INTERVAL_SECONDS")
+    return timing
 
 
 def timing_for_position(worker_group: str, position_amount: int | None) -> ProfileTiming:
     if worker_group == WORKER_GROUP_FAST_1 and position_amount == ULTRA_FAST_POSITION_AMOUNT:
-        return ULTRA_FAST_TIMING
+        return _with_min_interval_override(ULTRA_FAST_TIMING, "ULTRA_FAST_MIN_INTERVAL_SECONDS")
     return timing_for_group(worker_group)
 
 
@@ -219,3 +223,23 @@ def _avoid_repeated_delay(
 
 def _clamp(value: float, min_value: float, max_value: float) -> float:
     return max(min_value, min(value, max_value))
+
+
+def _with_min_interval_override(timing: ProfileTiming, env_name: str) -> ProfileTiming:
+    raw_value = os.getenv(env_name)
+    if raw_value is None or raw_value.strip() == "":
+        return timing
+    try:
+        min_seconds = float(raw_value)
+    except ValueError:
+        return timing
+    min_seconds = max(min_seconds, 0.01)
+    return ProfileTiming(
+        base_seconds=timing.base_seconds,
+        min_seconds=min_seconds,
+        max_seconds=max(timing.max_seconds, min_seconds),
+        normal_min_seconds=min_seconds,
+        normal_max_seconds=max(timing.normal_max_seconds, min_seconds),
+        backoff_min_seconds=timing.backoff_min_seconds,
+        backoff_max_seconds=timing.backoff_max_seconds,
+    )
