@@ -44,6 +44,7 @@ class Settings(BaseSettings):
     market_offers_url: str = "/roblox/packages"
     market_offers_api_url: str = "/api/offers/list-by-category"
     market_offers_limit: int = Field(default=100, ge=1, le=500)
+    market_category_cache_ttl_seconds: float = Field(default=1.5, ge=0, le=10)
     enable_real_price_writes: bool = False
     market_update_lot_price_url: str = ""
     market_update_lot_price_method: str = "POST"

@@ -144,6 +144,10 @@ class RepricerEngine:
             offers_after_filter=len(filter_result.accepted),
             parser_rejected_count=market_result.parser_rejected_count,
             ignored_reasons=dict(ignored_counts),
+            market_cache_hit=market_result.cache_hit,
+            market_inflight_dedupe_hit=market_result.inflight_dedupe_hit,
+            market_cache_key=market_result.market_cache_key,
+            category_payload_size=market_result.response_size_bytes,
         )
         await self.positions.add_competitor_snapshots(
             position,

@@ -1,3 +1,4 @@
+import asyncio
 import json
 from decimal import Decimal
 
@@ -391,6 +392,92 @@ async def test_get_market_offers_uses_read_only_api_category_endpoint() -> None:
     assert result.raw_offer_count == 1
     assert len(result.offers) == 1
     assert result.offers[0].price == Decimal("75.70000")
+
+
+@pytest.mark.asyncio
+async def test_market_offers_result_uses_short_cache() -> None:
+    calls = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "id": 213225,
+                    "price": "75.70000",
+                    "availability": 120,
+                    "subCategory": {"name": "80 робуксов"},
+                    "user": {"id": 70238, "username": "psorias", "rating": 5},
+                }
+            ],
+        )
+
+    client = httpx.AsyncClient(
+        base_url="https://starvell.example",
+        transport=httpx.MockTransport(handler),
+    )
+    settings = Settings(
+        _env_file=None,
+        market_base_url="https://starvell.example",
+        market_offers_api_url="/api/offers/list-by-category",
+        market_category_cache_ttl_seconds=1.5,
+    )
+
+    async with StarvellClient(settings, InMemoryFixedWindowRateLimiter(), client) as starvell:
+        first = await starvell.get_market_offers_result(80, "1996")
+        second = await starvell.get_market_offers_result(80, "another-lot")
+
+    assert calls == 1
+    assert first.cache_hit is False
+    assert second.cache_hit is True
+    assert second.lot_id == "another-lot"
+    assert second.market_cache_key == first.market_cache_key
+
+
+@pytest.mark.asyncio
+async def test_market_offers_result_deduplicates_inflight_requests() -> None:
+    calls = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        await asyncio.sleep(0.05)
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "id": 213225,
+                    "price": "75.70000",
+                    "availability": 120,
+                    "subCategory": {"name": "80 робуксов"},
+                    "user": {"id": 70238, "username": "psorias", "rating": 5},
+                }
+            ],
+        )
+
+    client = httpx.AsyncClient(
+        base_url="https://starvell.example",
+        transport=httpx.MockTransport(handler),
+    )
+    settings = Settings(
+        _env_file=None,
+        market_base_url="https://starvell.example",
+        market_offers_api_url="/api/offers/list-by-category",
+        market_category_cache_ttl_seconds=1.5,
+    )
+
+    async with StarvellClient(settings, InMemoryFixedWindowRateLimiter(), client) as starvell:
+        first, second = await asyncio.gather(
+            starvell.get_market_offers_result(80, "1996"),
+            starvell.get_market_offers_result(80, "another-lot"),
+        )
+
+    assert calls == 1
+    assert first.cache_hit is False
+    assert second.cache_hit is True
+    assert second.inflight_dedupe_hit is True
 
 
 @pytest.mark.asyncio

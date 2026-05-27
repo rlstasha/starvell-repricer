@@ -1,7 +1,10 @@
+import asyncio
+import hashlib
 import html as html_module
 import json
 import re
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from typing import Any
 from urllib.parse import quote
@@ -112,6 +115,10 @@ class MarketOffersFetchResult:
     offers: list[MarketOffer]
     subcategory_id: int | None = None
     parser_rejected_count: int = 0
+    cache_hit: bool = False
+    inflight_dedupe_hit: bool = False
+    market_cache_key: str | None = None
+    response_size_bytes: int | None = None
 
 
 @dataclass(frozen=True)
@@ -143,6 +150,8 @@ class StarvellClient:
         self.proxy_profile = proxy_profile
         self.proxy_url = proxy_url
         self.logger = get_logger(__name__)
+        self._market_category_cache: dict[str, tuple[float, MarketOffersFetchResult]] = {}
+        self._market_category_inflight: dict[str, asyncio.Task[MarketOffersFetchResult]] = {}
 
     async def __aenter__(self) -> "StarvellClient":
         await self._ensure_http_client()
@@ -362,36 +371,82 @@ class StarvellClient:
         """Fetch public market offers and keep diagnostics about the requested source."""
         subcategory_id = STARVELL_ROBUX_SUBCATEGORY_IDS.get(position_amount)
         if self.settings.market_offers_api_url and subcategory_id is not None:
-            response = await self._request(
-                "POST",
-                self.settings.market_offers_api_url,
-                request_type="market_offers",
-                json=_market_offers_api_payload(
-                    position_amount=position_amount,
-                    limit=self.settings.market_offers_limit,
-                ),
-            )
-            payload = response.json()
-            raw_items = _extract_offer_payload_items(payload)
-            offers = parse_starvell_market_offers_payload(
-                raw_items,
+            request_payload = _market_offers_api_payload(
                 position_amount=position_amount,
+                limit=self.settings.market_offers_limit,
             )
-            result = MarketOffersFetchResult(
-                position_amount=position_amount,
-                lot_id=lot_id,
-                method="POST",
+            cache_key = self._market_category_cache_key(
                 url=self.settings.market_offers_api_url,
-                source="api_list_by_category",
-                raw_offer_count=len(raw_items),
-                offers=offers,
-                subcategory_id=subcategory_id,
-                parser_rejected_count=max(len(raw_items) - len(offers), 0),
+                payload=request_payload,
             )
-            self._log_empty_market_result(result)
+            if cached_result := self._cached_market_category_result(cache_key, lot_id=lot_id):
+                return cached_result
+
+            if inflight := self._market_category_inflight.get(cache_key):
+                result = await inflight
+                return replace(
+                    result,
+                    lot_id=lot_id,
+                    cache_hit=True,
+                    inflight_dedupe_hit=True,
+                )
+
+            task = asyncio.create_task(
+                self._fetch_market_offers_api_result(
+                    position_amount=position_amount,
+                    lot_id=lot_id,
+                    request_payload=request_payload,
+                    subcategory_id=subcategory_id,
+                    cache_key=cache_key,
+                )
+            )
+            self._market_category_inflight[cache_key] = task
+            try:
+                result = await task
+            finally:
+                if self._market_category_inflight.get(cache_key) is task:
+                    self._market_category_inflight.pop(cache_key, None)
+            self._remember_market_category_result(cache_key, result)
             return result
 
         return await self._get_market_offers_from_category_html(position_amount, lot_id)
+
+    async def _fetch_market_offers_api_result(
+        self,
+        *,
+        position_amount: int,
+        lot_id: str | None,
+        request_payload: dict[str, Any],
+        subcategory_id: int,
+        cache_key: str,
+    ) -> MarketOffersFetchResult:
+        response = await self._request(
+            "POST",
+            self.settings.market_offers_api_url,
+            request_type="market_offers",
+            json=request_payload,
+        )
+        payload = response.json()
+        raw_items = _extract_offer_payload_items(payload)
+        offers = parse_starvell_market_offers_payload(
+            raw_items,
+            position_amount=position_amount,
+        )
+        result = MarketOffersFetchResult(
+            position_amount=position_amount,
+            lot_id=lot_id,
+            method="POST",
+            url=self.settings.market_offers_api_url,
+            source="api_list_by_category",
+            raw_offer_count=len(raw_items),
+            offers=offers,
+            subcategory_id=subcategory_id,
+            parser_rejected_count=max(len(raw_items) - len(offers), 0),
+            market_cache_key=cache_key,
+            response_size_bytes=len(response.content),
+        )
+        self._log_empty_market_result(result)
+        return result
 
     async def _get_market_offers_from_category_html(
         self,
@@ -418,9 +473,46 @@ class StarvellClient:
             offers=offers,
             subcategory_id=STARVELL_ROBUX_SUBCATEGORY_IDS.get(position_amount),
             parser_rejected_count=max(len(raw_items) - len(offers), 0),
+            response_size_bytes=len(response.content),
         )
         self._log_empty_market_result(result)
         return result
+
+    def _market_category_cache_key(self, *, url: str, payload: dict[str, Any]) -> str:
+        payload_key = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        raw_key = f"{self.proxy_profile or 'direct'}:{url}:{payload_key}"
+        digest = hashlib.sha1(raw_key.encode("utf-8")).hexdigest()[:16]
+        return f"market:{digest}"
+
+    def _cached_market_category_result(
+        self,
+        cache_key: str,
+        *,
+        lot_id: str | None,
+    ) -> MarketOffersFetchResult | None:
+        ttl = self.settings.market_category_cache_ttl_seconds
+        if ttl <= 0:
+            return None
+        cached = self._market_category_cache.get(cache_key)
+        if cached is None:
+            return None
+        cached_at, result = cached
+        if time.monotonic() - cached_at > ttl:
+            self._market_category_cache.pop(cache_key, None)
+            return None
+        return replace(result, lot_id=lot_id, cache_hit=True, inflight_dedupe_hit=False)
+
+    def _remember_market_category_result(
+        self,
+        cache_key: str,
+        result: MarketOffersFetchResult,
+    ) -> None:
+        if self.settings.market_category_cache_ttl_seconds <= 0:
+            return
+        self._market_category_cache[cache_key] = (
+            time.monotonic(),
+            replace(result, cache_hit=False, inflight_dedupe_hit=False),
+        )
 
     def _log_empty_market_result(self, result: MarketOffersFetchResult) -> None:
         if result.offers:
