@@ -140,6 +140,12 @@ class RepricerEngine:
                 position.lot_id,
             )
         offers = market_result.offers
+        if market_own_lot := self.starvell_client.refresh_own_lot_cache_from_market(
+            position_amount=position.robux_amount,
+            lot_id=position.lot_id,
+            offers=offers,
+        ):
+            own_lot = market_own_lot
         current_price = self._current_price(position, own_lot)
 
         filter_settings = CompetitorFilterSettings(

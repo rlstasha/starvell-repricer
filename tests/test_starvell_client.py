@@ -16,7 +16,7 @@ from app.market.client import (
     safe_starvell_error_reason,
 )
 from app.market.exceptions import StarvellEndpointNotConfiguredError, StarvellWriteDisabledError
-from app.market.schemas import OwnLot
+from app.market.schemas import MarketOffer, OwnLot
 from app.repricer.rate_limiter import InMemoryFixedWindowRateLimiter
 
 
@@ -639,6 +639,46 @@ async def test_own_lot_cache_status_reports_fresh_and_expired_cache() -> None:
         expired = starvell.own_lot_cache_status("2000")
         assert expired["fresh"] is False
         assert expired["reason"] == "cache_expired"
+
+
+@pytest.mark.asyncio
+async def test_own_lot_cache_refreshes_from_market_offer_payload() -> None:
+    settings = Settings(
+        _env_file=None,
+        market_base_url="https://starvell.example",
+        my_lot_state_cache_ttl_seconds=30,
+    )
+
+    async with StarvellClient(
+        settings,
+        InMemoryFixedWindowRateLimiter(),
+        httpx.AsyncClient(
+            base_url="https://starvell.example",
+            transport=httpx.MockTransport(lambda request: httpx.Response(404)),
+        ),
+    ) as starvell:
+        starvell._remember_own_lot(
+            OwnLot(position_amount=500, price=Decimal("314.40"), lot_id="2000")
+        )
+
+        own_lot = starvell.refresh_own_lot_cache_from_market(
+            position_amount=500,
+            lot_id="2000",
+            offers=[
+                MarketOffer(
+                    position_amount=500,
+                    price=Decimal("314.10"),
+                    seller_id="seller",
+                    seller_username="me",
+                    rating=Decimal("5"),
+                    raw_payload={"id": 2000, "price": "314.10000"},
+                )
+            ],
+        )
+
+        assert own_lot is not None
+        assert own_lot.price == Decimal("314.10")
+        assert await starvell.get_my_lot(500, "2000") == own_lot
 
 
 @pytest.mark.asyncio

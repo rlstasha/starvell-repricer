@@ -636,6 +636,47 @@ class StarvellClient:
         if lot_id:
             self._own_lot_cache.pop(str(lot_id), None)
 
+    def refresh_own_lot_cache_from_market(
+        self,
+        *,
+        position_amount: int,
+        lot_id: str | None,
+        offers: list[MarketOffer],
+    ) -> OwnLot | None:
+        """Refresh own price cache when list-by-category includes our own lot."""
+        if not lot_id:
+            return None
+        lot_id_text = str(lot_id)
+        for offer in offers:
+            payload = offer.raw_payload
+            if not isinstance(payload, dict):
+                continue
+            parsed_lot_id = _find_direct_string(
+                payload,
+                ("id", "lot_id", "lotId", "listing_id", "listingId", "offer_id", "offerId"),
+            )
+            if parsed_lot_id != lot_id_text:
+                continue
+
+            own_lot = OwnLot(
+                position_amount=position_amount,
+                price=offer.price,
+                lot_id=lot_id_text,
+                raw_payload=payload,
+            )
+            cached = self._own_lot_cache.get(lot_id_text)
+            cached_price = cached[1].price if cached else None
+            if cached_price != own_lot.price:
+                self.logger.info(
+                    "starvell_own_lot_cache_refreshed_from_market",
+                    lot_id=lot_id_text,
+                    old_price=str(cached_price) if cached_price is not None else None,
+                    new_price=str(own_lot.price),
+                )
+            self._remember_own_lot(own_lot)
+            return own_lot
+        return None
+
     async def get_my_lot(self, position_amount: int, lot_id: str | None) -> OwnLot | None:
         """Fetch own lot page by lot_id using safe GET and parse current price."""
         if not lot_id:
