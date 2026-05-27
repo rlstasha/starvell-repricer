@@ -146,3 +146,43 @@ do not make it default without confirmation
 Why: TTL 30 raises `parallel_fetch=true` from the previous 62-74% range to 90%+ without increasing
 global/account limits or causing 429. This improves useful work per request more safely than raising
 the global limit.
+
+## Soft-cap-off Starvell ceiling probe
+
+Date: 2026-05-27
+
+Goal: check whether the previous `350` step was stopped by Starvell or by our own proactive limiter.
+These steps used temporary overrides only:
+
+```env
+RATE_LIMITER_SOFT_CAP_ENABLED=false
+SCHEDULER_MAX_CONCURRENT_POSITIONS=2
+ULTRA_FAST_MIN_INTERVAL_SECONDS=0.4
+FAST1_MIN_INTERVAL_SECONDS=0.8
+FAST1_MIN_DELAY_MS=200
+FAST1_JITTER_MS=100
+MY_LOT_STATE_CACHE_TTL_SECONDS=30
+```
+
+| Step | GLOBAL/ACCOUNT | 429 | rate_limited | max req/60s | req/min | updated/min | skipped/min | wait count | backoff 429 | write failures | proxy errors | useful/100 req | 500R parallel | verdict |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 400 | 400 | 0 | 0 | 383 | 343.5 | 68.9 | 64.4 | 0 | 0 | 0 | 0 | 20.05 | 99.0% | best useful probe |
+| 500 | 500 | 0 | 0 | 355 | 315.3 | 56.6 | 82.5 | 0 | 0 | 0 | 0 | 17.95 | 99.0% | less useful |
+| 600 | 600 | 0 | 0 | 349 | 289.4 | 55.0 | 62.5 | 0 | 0 | 0 | 1 | 19.00 | 98.6% | stopped by proxy error |
+
+Result:
+
+```text
+starvell_real_ceiling: not reached in this probe
+highest observed clean 60-second window without 429: 383 requests
+recommended production ceiling: keep GLOBAL/ACCOUNT at 300 until predictive limiter is improved
+best temporary benchmark config: GLOBAL/ACCOUNT=400 with soft cap off, but only for supervised tests
+```
+
+Interpretation:
+
+- Disabling the proactive soft cap proved the earlier wait count was internal limiter pressure, not a Starvell 429.
+- Starvell did not return 429 up to the observed `383 req/60s` window.
+- Higher configured limits did not automatically increase useful throughput: `500` and `600` were worse than `400`.
+- `600` hit a proxy transport error, so it is not safe.
+- Keep `RATE_LIMITER_SOFT_CAP_ENABLED=true` by default. Use `false` only for controlled ceiling probes.
