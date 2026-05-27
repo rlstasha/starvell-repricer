@@ -16,6 +16,7 @@ from app.market.client import (
     safe_starvell_error_reason,
 )
 from app.market.exceptions import StarvellEndpointNotConfiguredError, StarvellWriteDisabledError
+from app.market.schemas import OwnLot
 from app.repricer.rate_limiter import InMemoryFixedWindowRateLimiter
 
 
@@ -586,6 +587,58 @@ async def test_get_my_lot_uses_short_cache() -> None:
     assert second is not None
     assert first.price == Decimal("79.30000")
     assert second.price == Decimal("79.30000")
+
+
+@pytest.mark.asyncio
+async def test_own_lot_cache_status_reports_false_reason() -> None:
+    settings = Settings(
+        _env_file=None,
+        market_base_url="https://starvell.example",
+        my_lot_state_cache_ttl_seconds=10,
+    )
+
+    async with StarvellClient(
+        settings,
+        InMemoryFixedWindowRateLimiter(),
+        httpx.AsyncClient(
+            base_url="https://starvell.example",
+            transport=httpx.MockTransport(lambda request: httpx.Response(404)),
+        ),
+    ) as starvell:
+        assert starvell.own_lot_cache_status(None)["reason"] == "missing_lot_id"
+        assert starvell.own_lot_cache_status("2000")["reason"] == "cache_empty"
+
+
+@pytest.mark.asyncio
+async def test_own_lot_cache_status_reports_fresh_and_expired_cache() -> None:
+    settings = Settings(
+        _env_file=None,
+        market_base_url="https://starvell.example",
+        my_lot_state_cache_ttl_seconds=1,
+    )
+
+    async with StarvellClient(
+        settings,
+        InMemoryFixedWindowRateLimiter(),
+        httpx.AsyncClient(
+            base_url="https://starvell.example",
+            transport=httpx.MockTransport(lambda request: httpx.Response(404)),
+        ),
+    ) as starvell:
+        starvell._remember_own_lot(
+            OwnLot(position_amount=500, price=Decimal("314.40"), lot_id="2000")
+        )
+        fresh = starvell.own_lot_cache_status("2000")
+        assert fresh["fresh"] is True
+        assert fresh["reason"] == "cache_fresh"
+
+        starvell._own_lot_cache["2000"] = (
+            starvell._own_lot_cache["2000"][0] - 2,
+            starvell._own_lot_cache["2000"][1],
+        )
+        expired = starvell.own_lot_cache_status("2000")
+        assert expired["fresh"] is False
+        assert expired["reason"] == "cache_expired"
 
 
 @pytest.mark.asyncio

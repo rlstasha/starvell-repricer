@@ -95,7 +95,20 @@ class RepricerEngine:
                 position.state.last_seen_competitor_price if position.state else None,
             )
 
-        parallel_fetch_enabled = self.starvell_client.has_fresh_own_lot_cache(position.lot_id)
+        own_lot_cache_status = self.starvell_client.own_lot_cache_status(position.lot_id)
+        parallel_fetch_enabled = bool(own_lot_cache_status["fresh"])
+        parallel_fetch_disabled_reason = (
+            None if parallel_fetch_enabled else str(own_lot_cache_status["reason"])
+        )
+        if position.robux_amount == 500:
+            self.logger.info(
+                "repricer_500_parallel_fetch_diagnostics",
+                lot_id=position.lot_id,
+                parallel_fetch_enabled=parallel_fetch_enabled,
+                parallel_fetch_disabled_reason=parallel_fetch_disabled_reason,
+                own_lot_cache_age_seconds=own_lot_cache_status["cache_age_seconds"],
+                own_lot_cache_ttl_seconds=own_lot_cache_status["cache_ttl_seconds"],
+            )
         if parallel_fetch_enabled:
             market_task = asyncio.create_task(
                 self._timed_market_fetch(position.robux_amount, position.lot_id)
@@ -199,6 +212,7 @@ class RepricerEngine:
                 my_lot_request_ms=my_lot_request_ms,
                 cycle_started_at=cycle_started_at,
                 parallel_fetch_enabled=parallel_fetch_enabled,
+                parallel_fetch_disabled_reason=parallel_fetch_disabled_reason,
             )
             return ProcessResult(
                 position.robux_amount,
@@ -229,6 +243,7 @@ class RepricerEngine:
                 my_lot_request_ms=my_lot_request_ms,
                 cycle_started_at=cycle_started_at,
                 parallel_fetch_enabled=parallel_fetch_enabled,
+                parallel_fetch_disabled_reason=parallel_fetch_disabled_reason,
             )
             return ProcessResult(
                 position.robux_amount,
@@ -267,6 +282,7 @@ class RepricerEngine:
                 my_lot_request_ms=my_lot_request_ms,
                 cycle_started_at=cycle_started_at,
                 parallel_fetch_enabled=parallel_fetch_enabled,
+                parallel_fetch_disabled_reason=parallel_fetch_disabled_reason,
             )
             return ProcessResult(
                 position.robux_amount,
@@ -311,6 +327,7 @@ class RepricerEngine:
             my_lot_request_ms=my_lot_request_ms,
             cycle_started_at=cycle_started_at,
             parallel_fetch_enabled=parallel_fetch_enabled,
+            parallel_fetch_disabled_reason=parallel_fetch_disabled_reason,
         )
         return ProcessResult(
             position.robux_amount,
@@ -344,6 +361,7 @@ class RepricerEngine:
         my_lot_request_ms: float,
         cycle_started_at: float,
         parallel_fetch_enabled: bool,
+        parallel_fetch_disabled_reason: str | None,
     ) -> None:
         self.logger.info(
             "repricer_cycle_profile",
@@ -353,6 +371,7 @@ class RepricerEngine:
             status=status,
             reason=reason,
             parallel_fetch_enabled=parallel_fetch_enabled,
+            parallel_fetch_disabled_reason=parallel_fetch_disabled_reason,
             market_request_ms=market_request_ms,
             my_lot_request_ms=my_lot_request_ms,
             cycle_total_ms=_elapsed_ms(cycle_started_at),

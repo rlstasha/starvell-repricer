@@ -583,20 +583,49 @@ class StarvellClient:
         )
         return own_lot
 
-    def has_fresh_own_lot_cache(self, lot_id: str | None) -> bool:
+    def own_lot_cache_status(self, lot_id: str | None) -> dict[str, float | str | bool | None]:
         if not lot_id:
-            return False
+            return {
+                "fresh": False,
+                "reason": "missing_lot_id",
+                "cache_age_seconds": None,
+                "cache_ttl_seconds": self.settings.my_lot_state_cache_ttl_seconds,
+            }
         ttl = self.settings.my_lot_state_cache_ttl_seconds
         if ttl <= 0:
-            return False
+            return {
+                "fresh": False,
+                "reason": "cache_disabled",
+                "cache_age_seconds": None,
+                "cache_ttl_seconds": ttl,
+            }
         cached = self._own_lot_cache.get(str(lot_id))
         if cached is None:
-            return False
+            return {
+                "fresh": False,
+                "reason": "cache_empty",
+                "cache_age_seconds": None,
+                "cache_ttl_seconds": ttl,
+            }
         cached_at, _ = cached
-        if time.monotonic() - cached_at > ttl:
+        cache_age_seconds = time.monotonic() - cached_at
+        if cache_age_seconds > ttl:
             self._own_lot_cache.pop(str(lot_id), None)
-            return False
-        return True
+            return {
+                "fresh": False,
+                "reason": "cache_expired",
+                "cache_age_seconds": round(cache_age_seconds, 2),
+                "cache_ttl_seconds": ttl,
+            }
+        return {
+            "fresh": True,
+            "reason": "cache_fresh",
+            "cache_age_seconds": round(cache_age_seconds, 2),
+            "cache_ttl_seconds": ttl,
+        }
+
+    def has_fresh_own_lot_cache(self, lot_id: str | None) -> bool:
+        return bool(self.own_lot_cache_status(lot_id)["fresh"])
 
     def _remember_own_lot(self, own_lot: OwnLot) -> None:
         if self.settings.my_lot_state_cache_ttl_seconds <= 0 or not own_lot.lot_id:
