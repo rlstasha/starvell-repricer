@@ -154,6 +154,7 @@ class StarvellClient:
         self._market_category_cache: dict[str, tuple[float, MarketOffersFetchResult]] = {}
         self._market_category_inflight: dict[str, asyncio.Task[MarketOffersFetchResult]] = {}
         self._own_lot_cache: dict[str, tuple[float, OwnLot]] = {}
+        self._price_update_context_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 
     async def __aenter__(self) -> "StarvellClient":
         await self._ensure_http_client()
@@ -776,6 +777,7 @@ class StarvellClient:
             )
         except httpx.HTTPStatusError as exc:
             self._forget_own_lot(str(lot_id))
+            self._forget_price_update_context(str(lot_id))
             debug_extra = (
                 _debug_response_fields(exc.response, self.settings)
                 if self.settings.price_write_discovery
@@ -932,6 +934,10 @@ class StarvellClient:
         lot_id: str,
     ) -> dict[str, Any]:
         """Pull non-secret offer fields from safe GET pages for diagnostic write payloads."""
+        cached_context = self._cached_price_update_context(lot_id)
+        if cached_context is not None:
+            return cached_context
+
         context: dict[str, Any] = {}
         for path in (f"/offers/{lot_id}", f"/offers/edit/{lot_id}"):
             try:
@@ -960,7 +966,60 @@ class StarvellClient:
         if self.settings.market_csrf_token:
             context.setdefault("csrf", self.settings.market_csrf_token)
             context.setdefault("_csrf", self.settings.market_csrf_token)
+        self._remember_price_update_context(lot_id, context)
         return context
+
+    def _cached_price_update_context(self, lot_id: str) -> dict[str, Any] | None:
+        ttl = self.settings.price_update_context_cache_ttl_seconds
+        if ttl <= 0:
+            self.logger.info(
+                "price_context_cache_miss",
+                lot_id=str(lot_id),
+                reason="disabled",
+                ttl_seconds=ttl,
+                proxy_profile=self.proxy_profile or "direct",
+            )
+            return None
+        cached = self._price_update_context_cache.get(str(lot_id))
+        if cached is None:
+            self.logger.info(
+                "price_context_cache_miss",
+                lot_id=str(lot_id),
+                reason="empty",
+                ttl_seconds=ttl,
+                proxy_profile=self.proxy_profile or "direct",
+            )
+            return None
+        cached_at, context = cached
+        age_seconds = time.monotonic() - cached_at
+        if age_seconds > ttl:
+            self._price_update_context_cache.pop(str(lot_id), None)
+            self.logger.info(
+                "price_context_cache_miss",
+                lot_id=str(lot_id),
+                reason="expired",
+                age_seconds=round(age_seconds, 2),
+                ttl_seconds=ttl,
+                proxy_profile=self.proxy_profile or "direct",
+            )
+            return None
+        self.logger.info(
+            "price_context_cache_hit",
+            lot_id=str(lot_id),
+            age_seconds=round(age_seconds, 2),
+            ttl_seconds=ttl,
+            proxy_profile=self.proxy_profile or "direct",
+        )
+        return dict(context)
+
+    def _remember_price_update_context(self, lot_id: str, context: dict[str, Any]) -> None:
+        ttl = self.settings.price_update_context_cache_ttl_seconds
+        if ttl <= 0:
+            return
+        self._price_update_context_cache[str(lot_id)] = (time.monotonic(), dict(context))
+
+    def _forget_price_update_context(self, lot_id: str) -> None:
+        self._price_update_context_cache.pop(str(lot_id), None)
 
     async def _send_price_update_request(
         self,

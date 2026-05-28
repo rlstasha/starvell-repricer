@@ -902,6 +902,119 @@ async def test_update_my_lot_price_can_send_partial_update_payload_from_offer_pa
 
 
 @pytest.mark.asyncio
+async def test_update_my_lot_price_reuses_cached_partial_update_context() -> None:
+    requests: list[httpx.Request] = []
+    html = """
+    <script id="__NEXT_DATA__" type="application/json">
+    {
+      "props": {
+        "pageProps": {
+          "offer": {
+            "id": 2000,
+            "availability": 927,
+            "price": "339.90",
+            "minOrderCurrencyAmount": null,
+            "isActive": true,
+            "instantDelivery": false
+          }
+        }
+      }
+    }
+    </script>
+    """
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.method == "GET":
+            return httpx.Response(200, text=html, headers={"content-type": "text/html"})
+        return httpx.Response(200, json={"ok": True})
+
+    client = httpx.AsyncClient(
+        base_url="https://starvell.example",
+        transport=httpx.MockTransport(handler),
+    )
+    settings = Settings(
+        _env_file=None,
+        market_base_url="https://starvell.example",
+        enable_real_price_writes=True,
+        market_update_lot_price_url="/api/offers/{lot_id}/partial-update",
+        market_update_price_payload_style="partial_update",
+        price_update_context_cache_ttl_seconds=300,
+    )
+
+    async with StarvellClient(settings, InMemoryFixedWindowRateLimiter(), client) as starvell:
+        await starvell.update_my_lot_price(
+            500,
+            "2000",
+            Decimal("123"),
+            allow_real_write=True,
+        )
+        await starvell.update_my_lot_price(
+            500,
+            "2000",
+            Decimal("122"),
+            allow_real_write=True,
+        )
+
+    assert [request.method for request in requests] == ["GET", "GET", "POST", "POST"]
+
+
+@pytest.mark.asyncio
+async def test_update_my_lot_price_invalidates_context_cache_after_http_error() -> None:
+    requests: list[httpx.Request] = []
+    html = """
+    <script id="__NEXT_DATA__" type="application/json">
+    {"props":{"pageProps":{"offer":{"id":2000,"availability":927,"isActive":true}}}}
+    </script>
+    """
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.method == "GET":
+            return httpx.Response(200, text=html, headers={"content-type": "text/html"})
+        if len([item for item in requests if item.method == "POST"]) == 1:
+            return httpx.Response(400, json={"ok": False})
+        return httpx.Response(200, json={"ok": True})
+
+    client = httpx.AsyncClient(
+        base_url="https://starvell.example",
+        transport=httpx.MockTransport(handler),
+    )
+    settings = Settings(
+        _env_file=None,
+        market_base_url="https://starvell.example",
+        enable_real_price_writes=True,
+        market_update_lot_price_url="/api/offers/{lot_id}/partial-update",
+        market_update_price_payload_style="partial_update",
+        price_update_context_cache_ttl_seconds=300,
+    )
+
+    async with StarvellClient(settings, InMemoryFixedWindowRateLimiter(), client) as starvell:
+        with pytest.raises(httpx.HTTPStatusError):
+            await starvell.update_my_lot_price(
+                500,
+                "2000",
+                Decimal("123"),
+                allow_real_write=True,
+            )
+        await starvell.update_my_lot_price(
+            500,
+            "2000",
+            Decimal("122"),
+            allow_real_write=True,
+        )
+
+    assert [request.method for request in requests] == [
+        "GET",
+        "GET",
+        "POST",
+        "GET",
+        "GET",
+        "POST",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_update_my_lot_price_can_send_bulk_payload() -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         assert request.method == "POST"

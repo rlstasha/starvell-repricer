@@ -105,6 +105,22 @@ def test_worker_scheduler_can_disable_proactive_rate_limits_for_benchmarks() -> 
     assert scheduler.rate_limiter.burst_limiter is None
 
 
+def test_worker_scheduler_uses_account_wide_burst_guard_in_token_mode() -> None:
+    settings = Settings(
+        _env_file=None,
+        worker_group="fast_1",
+        token_limit_mode=True,
+    )
+    scheduler = RepricerScheduler(
+        settings=settings,
+        session_factory=object(),
+        redis=object(),
+    )
+
+    assert scheduler.rate_limiter.burst_limiter is not None
+    assert scheduler.rate_limiter.burst_limiter.key_prefix == "repricer:burst:account"
+
+
 def test_hot_mode_keeps_500_fast_after_success(monkeypatch) -> None:
     monkeypatch.setattr("app.repricer.scheduler.random.uniform", lambda low, high: low)
     settings = Settings(_env_file=None, worker_group="fast_1", hot_mode_enabled=True)
@@ -361,8 +377,8 @@ async def test_worker_scheduler_reduces_effective_limit_after_429() -> None:
 
     await scheduler._update_error_state("failed", "rate_limited")
 
-    assert scheduler.effective_request_limit_per_minute == 270
-    assert scheduler.rate_limiter.profile_limiter.limit == 270
+    assert scheduler.effective_request_limit_per_minute == 90
+    assert scheduler.rate_limiter.profile_limiter.limit == 90
     assert scheduler.last_429_at is not None
     assert scheduler._backoff_active() is True
 

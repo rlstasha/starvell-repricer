@@ -84,6 +84,7 @@ class RateLimitSnapshot:
     backoff_active: bool
     last_429_at: datetime | None
     retry_after_until: datetime | None
+    ramp_recovery_eta_seconds: float | None = None
 
 
 class RedisFixedWindowRateLimiter:
@@ -162,6 +163,9 @@ class RedisTokenBucketRateLimiter:
         window = int(time.time() // 60)
         return f"{self.key_prefix}:usage:{window}"
 
+    def _sliding_usage_key(self) -> str:
+        return f"{self.key_prefix}:usage:sliding"
+
     async def try_acquire(self, cost: int = 1) -> bool:
         if cost < 1:
             raise ValueError("cost must be >= 1")
@@ -196,14 +200,20 @@ class RedisTokenBucketRateLimiter:
             await self.sleeper(self._last_wait_seconds)
 
     async def current_usage(self) -> int:
-        value = await self.redis.get(self._usage_key())
-        return int(value or 0)
+        return await _redis_sliding_usage_count(self.redis, self._sliding_usage_key())
 
     async def _increment_usage(self, cost: int) -> None:
+        now = time.time()
         key = self._usage_key()
         pipe = self.redis.pipeline(transaction=True)
         pipe.incrby(key, cost)
         pipe.expire(key, 125)
+        _pipeline_add_sliding_usage(
+            pipe,
+            self._sliding_usage_key(),
+            now=now,
+            cost=cost,
+        )
         await pipe.execute()
 
 
@@ -218,8 +228,8 @@ class RedisAdaptiveTokenBucketRateLimiter:
         initial_effective_limit_per_minute: int,
         min_limit_per_minute: int = 60,
         decrease_step_per_minute: int = 30,
-        ramp_step_per_minute: int = 10,
-        ramp_idle_seconds: float = 600.0,
+        ramp_step_per_minute: int = 30,
+        ramp_idle_seconds: float = 60.0,
         key_prefix: str = "repricer:account-token-limit",
         sleeper=asyncio.sleep,
     ):
@@ -246,6 +256,9 @@ class RedisAdaptiveTokenBucketRateLimiter:
     def _usage_key(self) -> str:
         window = int(time.time() // 60)
         return f"{self.key_prefix}:usage:{window}"
+
+    def _sliding_usage_key(self) -> str:
+        return f"{self.key_prefix}:usage:sliding"
 
     async def try_acquire(self, cost: int = 1) -> bool:
         if cost < 1:
@@ -274,8 +287,7 @@ class RedisAdaptiveTokenBucketRateLimiter:
             await self.sleeper(self._last_wait_seconds)
 
     async def current_usage(self) -> int:
-        value = await self.redis.get(self._usage_key())
-        return int(value or 0)
+        return await _redis_sliding_usage_count(self.redis, self._sliding_usage_key())
 
     async def record_response(
         self,
@@ -330,6 +342,12 @@ class RedisAdaptiveTokenBucketRateLimiter:
             effective_limit < self.configured_limit_per_minute
             or (retry_after_until_epoch and retry_after_until_epoch > now)
         )
+        ramp_recovery_eta_seconds = self._ramp_recovery_eta_seconds(
+            state=state,
+            now=now,
+            effective_limit=effective_limit,
+            retry_after_until_epoch=retry_after_until_epoch,
+        )
         return RateLimitSnapshot(
             configured_limit_per_minute=self.configured_limit_per_minute,
             effective_limit_per_minute=effective_limit,
@@ -337,6 +355,7 @@ class RedisAdaptiveTokenBucketRateLimiter:
             backoff_active=backoff_active,
             last_429_at=_datetime_from_epoch(last_429_epoch),
             retry_after_until=_datetime_from_epoch(retry_after_until_epoch),
+            ramp_recovery_eta_seconds=ramp_recovery_eta_seconds,
         )
 
     async def _state(self) -> dict[str, str]:
@@ -403,11 +422,45 @@ class RedisAdaptiveTokenBucketRateLimiter:
         return False
 
     async def _increment_usage(self, cost: int) -> None:
+        now = time.time()
         key = self._usage_key()
         pipe = self.redis.pipeline(transaction=True)
         pipe.incrby(key, cost)
         pipe.expire(key, 125)
+        _pipeline_add_sliding_usage(
+            pipe,
+            self._sliding_usage_key(),
+            now=now,
+            cost=cost,
+        )
         await pipe.execute()
+
+    def _ramp_recovery_eta_seconds(
+        self,
+        *,
+        state: dict[str, str],
+        now: float,
+        effective_limit: int,
+        retry_after_until_epoch: float | None,
+    ) -> float | None:
+        if effective_limit >= self.configured_limit_per_minute:
+            return None
+        last_ramp_at = _float_state(state, "last_ramp_at_epoch") or now
+        elapsed = max(now - last_ramp_at, 0.0)
+        seconds_to_next_ramp = max(self.ramp_idle_seconds - elapsed, 0.0)
+        next_limit = min(
+            self.configured_limit_per_minute,
+            effective_limit + self.ramp_step_per_minute,
+        )
+        remaining_after_next = max(self.configured_limit_per_minute - next_limit, 0)
+        full_steps_after_next = (
+            (remaining_after_next + self.ramp_step_per_minute - 1)
+            // self.ramp_step_per_minute
+        )
+        eta = seconds_to_next_ramp + full_steps_after_next * self.ramp_idle_seconds
+        if retry_after_until_epoch and retry_after_until_epoch > now:
+            eta = max(eta, retry_after_until_epoch - now)
+        return round(eta, 2)
 
 
 class NoopRateLimiter:
@@ -621,6 +674,28 @@ def _float_state(state: dict[str, str], key: str) -> float | None:
     except (TypeError, ValueError):
         return None
     return value or None
+
+
+def _pipeline_add_sliding_usage(pipe, key: str, *, now: float, cost: int) -> None:
+    old_before = now - 60
+    members = {
+        f"{now:.6f}:{time.time_ns()}:{index}": now
+        for index in range(cost)
+    }
+    if members:
+        pipe.zadd(key, members)
+    pipe.zremrangebyscore(key, "-inf", old_before)
+    pipe.expire(key, 125)
+
+
+async def _redis_sliding_usage_count(redis: Redis, key: str, *, now: float | None = None) -> int:
+    current_time = time.time() if now is None else now
+    pipe = redis.pipeline(transaction=True)
+    pipe.zremrangebyscore(key, "-inf", current_time - 60)
+    pipe.zcount(key, current_time - 60, "+inf")
+    pipe.expire(key, 125)
+    _, count, _ = await pipe.execute()
+    return int(count or 0)
 
 
 def _datetime_from_epoch(value: float | None) -> datetime | None:

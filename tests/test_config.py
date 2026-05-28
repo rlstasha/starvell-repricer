@@ -93,12 +93,15 @@ def test_account_effective_limit_defaults_to_full_proxy_capacity() -> None:
 
     assert settings.token_limit_mode is True
     assert settings.rate_limiter_soft_cap_enabled is True
-    assert settings.global_request_limit_per_minute == 700
-    assert settings.account_effective_limit_per_minute == 700
+    assert settings.global_request_limit_per_minute == 240
+    assert settings.account_effective_limit_per_minute == 240
     assert settings.account_min_limit_per_minute == 60
-    assert settings.proxy_request_limits["fast_1"] == 280
-    assert settings.proxy_request_limits["fast_2"] == 280
-    assert settings.proxy_request_limits["slow"] == 140
+    assert settings.account_limit_ramp_step_per_minute == 30
+    assert settings.account_limit_ramp_idle_seconds == 60.0
+    assert settings.price_update_context_cache_ttl_seconds == 300.0
+    assert settings.proxy_request_limits["fast_1"] == 100
+    assert settings.proxy_request_limits["fast_2"] == 90
+    assert settings.proxy_request_limits["slow"] == 50
 
 
 def test_request_pacing_defaults_are_safe_without_group_overrides() -> None:

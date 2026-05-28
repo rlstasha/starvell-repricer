@@ -456,12 +456,18 @@ class RepricerScheduler:
         change_score = apply_strategy_activity_floor(change_score, result.reason)
         error_score = update_error_score(state.error_score, failed=result.status == "failed")
         backoff_active = self._backoff_active() or error_kind == "429"
+        backoff_reason = (
+            "backoff_after_429"
+            if error_kind == "429" or self.last_error_kind == "429"
+            else "backoff_after_error"
+        )
         decision = choose_dynamic_delay(
             worker_group=self.settings.worker_group,
             position_amount=position.robux_amount,
             change_score=change_score,
             error_score=error_score,
             backoff_active=backoff_active,
+            backoff_reason=backoff_reason,
             previous_delay_seconds=state.current_interval_seconds,
         )
         now_monotonic = time.monotonic()
@@ -805,9 +811,11 @@ class RepricerScheduler:
             token_limit_mode=self.settings.token_limit_mode,
             profile_configured_limit_per_minute=self.configured_request_limit_per_minute,
             profile_effective_limit_per_minute=self.effective_request_limit_per_minute,
+            profile_requests_last_60s=profile_usage,
             profile_requests_in_current_window=profile_usage,
             account_configured_limit_per_minute=account_configured,
             account_effective_limit_per_minute=account_effective,
+            account_requests_last_60s=account_usage,
             account_requests_in_current_window=account_usage,
             active_account_ceiling_per_minute=account_effective,
             account_backoff_active=bool(account_snapshot and account_snapshot.backoff_active),
@@ -821,7 +829,11 @@ class RepricerScheduler:
                 if account_snapshot and account_snapshot.retry_after_until
                 else None
             ),
-            usage_window_reset_seconds=round(60 - (now % 60), 2),
+            ramp_recovery_eta_seconds=(
+                account_snapshot.ramp_recovery_eta_seconds if account_snapshot else None
+            ),
+            limiter_window_type="sliding",
+            usage_window_seconds=60,
             burst_limit_per_second=(
                 self.settings.request_burst_limit
                 if self.settings.rate_limiter_soft_cap_enabled
@@ -937,8 +949,14 @@ class RepricerScheduler:
                     initial_effective_limit_per_minute=self.settings.account_effective_limit_per_minute,
                     min_limit_per_minute=self.settings.account_min_limit_per_minute,
                     decrease_step_per_minute=self.settings.account_limit_decrease_step_per_minute,
-                    ramp_step_per_minute=self.settings.account_limit_ramp_step_per_minute,
-                    ramp_idle_seconds=self.settings.account_limit_ramp_idle_seconds,
+                    ramp_step_per_minute=(
+                        self.settings.ramp_step_per_minute
+                        or self.settings.account_limit_ramp_step_per_minute
+                    ),
+                    ramp_idle_seconds=(
+                        self.settings.ramp_idle_seconds
+                        or self.settings.account_limit_ramp_idle_seconds
+                    ),
                     key_prefix="repricer:account-token-limit",
                 )
             else:
@@ -951,7 +969,11 @@ class RepricerScheduler:
                 self.redis,
                 limit=self.settings.request_burst_limit,
                 window_seconds=1,
-                key_prefix=f"repricer:burst:{self.settings.worker_group}",
+                key_prefix=(
+                    "repricer:burst:account"
+                    if self.settings.token_limit_mode
+                    else f"repricer:burst:{self.settings.worker_group}"
+                ),
             )
         else:
             profile = NoopRateLimiter()

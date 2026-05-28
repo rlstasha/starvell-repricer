@@ -36,6 +36,7 @@ from app.db.models import (
     WorkerHeartbeat,
     WorkerState,
 )
+from app.repricer.rate_limiter import RateLimitSnapshot
 
 
 def _position(amount: int, lot_id: str | None = None) -> Position:
@@ -203,7 +204,7 @@ def test_main_menu_is_minimal_start_screen() -> None:
         public_ip="45.132.20.115",
         assigned_positions=[500, 800, 1000],
         request_limit_per_minute=100,
-        account_request_usage_per_minute=258,
+        account_request_usage_per_minute=208,
         last_seen_at=datetime.now(UTC),
         status="success",
         dry_run=False,
@@ -215,7 +216,7 @@ def test_main_menu_is_minimal_start_screen() -> None:
         price_write_endpoint_configured=True,
         proxy_mode="enabled",
         heartbeats=[heartbeat],
-        request_usage=258,
+        request_usage=208,
         global_limit=settings.global_request_limit_per_minute,
         group_infos=settings.worker_group_infos,
     )
@@ -291,7 +292,7 @@ def test_status_overview_is_short_and_proxy_aware() -> None:
         public_ip="45.132.20.205",
         assigned_positions=[400, 1200, 1700, 2000],
         request_limit_per_minute=100,
-        account_request_usage_per_minute=258,
+        account_request_usage_per_minute=208,
         last_seen_at=datetime.now(UTC),
         status="success",
         dry_run=False,
@@ -317,7 +318,7 @@ def test_status_overview_is_short_and_proxy_aware() -> None:
         real_price_writes_enabled=True,
         price_write_endpoint_configured=True,
         latest_price_update=(latest_update, _position(800, "2002")),
-        request_usage=258,
+        request_usage=208,
         global_limit=settings.global_request_limit_per_minute,
         group_infos=settings.worker_group_infos,
     )
@@ -326,7 +327,7 @@ def test_status_overview_is_short_and_proxy_aware() -> None:
     assert "🤖 Worker:\n✅ активен" in text
     assert "💰 Реальные цены:\n✅ активно" in text
     assert "🌐 Прокси:\n✅ активны (1/3)" in text
-    assert "🚦 Нагрузка:\n258/700" in text
+    assert "🚦 Нагрузка:\n208/240" in text
     assert "🧯 Ошибки:\nнет" in text
     assert "800 робуксов" not in text
     assert "580.70 ₽" not in text
@@ -443,6 +444,33 @@ def test_limits_screen_uses_russian_labels() -> None:
     assert "Последний 429" not in text
     assert "Proxy capacity" not in text
     assert "Backoff" not in text
+
+
+def test_limits_screen_uses_limiter_snapshot_sliding_usage_and_ramp_eta() -> None:
+    settings = Settings(_env_file=None)
+    snapshot = RateLimitSnapshot(
+        configured_limit_per_minute=700,
+        effective_limit_per_minute=670,
+        current_usage=245,
+        backoff_active=True,
+        last_429_at=datetime(2026, 5, 15, 19, 10, tzinfo=UTC),
+        retry_after_until=None,
+        ramp_recovery_eta_seconds=42.2,
+    )
+
+    text = format_limits_screen(
+        group_infos=settings.worker_group_infos,
+        heartbeats=[],
+        request_usage=0,
+        global_limit=settings.global_request_limit_per_minute,
+        limiter_snapshot=snapshot,
+    )
+
+    assert "🧠 Лимит аккаунта:\n670/700/мин" in text
+    assert "📡 Запросы за 60 сек:" in text
+    assert "Итого:\n245/670" in text
+    assert "⚠️ Лимит восстанавливается:" in text
+    assert "через 42 сек" in text
 
 
 def test_scheduler_screen_is_separate_from_limits() -> None:

@@ -19,6 +19,7 @@ from app.repricer.adaptive_scheduler import (
     timing_for_group,
     timing_for_position,
 )
+from app.repricer.rate_limiter import RateLimitSnapshot
 from app.repricer.worker_groups import WorkerGroupInfo
 
 
@@ -559,12 +560,26 @@ def format_limits_screen(
     heartbeats: list[WorkerHeartbeat],
     request_usage: int,
     global_limit: int,
+    limiter_snapshot: RateLimitSnapshot | None = None,
 ) -> str:
     display_heartbeats = _current_group_heartbeats(heartbeats, group_infos)
     heartbeat_by_group = {heartbeat.worker_group: heartbeat for heartbeat in display_heartbeats}
     proxy_capacity = sum(info.request_limit_per_minute for info in group_infos)
-    account_effective_limit = _account_effective_limit(display_heartbeats, global_limit)
-    account_usage = _account_usage(display_heartbeats, request_usage)
+    account_effective_limit = (
+        limiter_snapshot.effective_limit_per_minute
+        if limiter_snapshot
+        else _account_effective_limit(display_heartbeats, global_limit)
+    )
+    account_configured_limit = (
+        limiter_snapshot.configured_limit_per_minute
+        if limiter_snapshot
+        else global_limit
+    )
+    account_usage = (
+        limiter_snapshot.current_usage
+        if limiter_snapshot
+        else _account_usage(display_heartbeats, request_usage)
+    )
     account_backoff = _account_backoff_active(
         display_heartbeats,
         account_effective_limit,
@@ -580,9 +595,9 @@ def format_limits_screen(
         f"{proxy_capacity}/мин",
         "",
         "🧠 Лимит аккаунта:",
-        f"{account_effective_limit}/мин",
+        f"{account_effective_limit}/{account_configured_limit}/мин",
         "",
-        "📡 Нагрузка:",
+        "📡 Запросы за 60 сек:",
         "",
     ]
     for info in group_infos:
@@ -601,6 +616,15 @@ def format_limits_screen(
             "активно" if account_backoff else "нет",
         ]
     )
+    if limiter_snapshot and limiter_snapshot.ramp_recovery_eta_seconds is not None:
+        lines.extend(
+            [
+                "",
+                "⚠️ Лимит восстанавливается:",
+                f"{account_effective_limit}/{account_configured_limit}",
+                f"через {int(limiter_snapshot.ramp_recovery_eta_seconds)} сек",
+            ]
+        )
     return "\n".join(lines)
 
 
@@ -717,6 +741,7 @@ def format_technical_status(
     recent_errors: list[tuple[PriceUpdateLog, Position | None]],
     group_infos: list[WorkerGroupInfo] | None = None,
     settings: object | None = None,
+    limiter_snapshot: RateLimitSnapshot | None = None,
 ) -> str:
     current_groups = {info.name for info in (group_infos or [])}
     lines = [
@@ -732,6 +757,9 @@ def format_technical_status(
         "",
         "Runtime config:",
         *_quote_lines(_runtime_config_lines(settings)),
+        "",
+        "Limiter:",
+        *_quote_lines(_limiter_snapshot_lines(limiter_snapshot)),
         "",
         "Heartbeats:",
     ]
@@ -807,6 +835,23 @@ def _runtime_config_lines(settings: object | None) -> list[str]:
         f"WORKER_FAST_1_REQUEST_LIMIT_PER_MINUTE={getattr(settings, 'worker_fast_1_request_limit_per_minute', '—')}",
         f"WORKER_FAST_2_REQUEST_LIMIT_PER_MINUTE={getattr(settings, 'worker_fast_2_request_limit_per_minute', '—')}",
         f"WORKER_SLOW_REQUEST_LIMIT_PER_MINUTE={getattr(settings, 'worker_slow_request_limit_per_minute', '—')}",
+        f"RAMP_STEP_PER_MINUTE={getattr(settings, 'ramp_step_per_minute', None) or getattr(settings, 'account_limit_ramp_step_per_minute', '—')}",
+        f"RAMP_IDLE_SECONDS={getattr(settings, 'ramp_idle_seconds', None) or getattr(settings, 'account_limit_ramp_idle_seconds', '—')}",
+        f"PRICE_UPDATE_CONTEXT_CACHE_TTL_SECONDS={getattr(settings, 'price_update_context_cache_ttl_seconds', '—')}",
+    ]
+
+
+def _limiter_snapshot_lines(snapshot: RateLimitSnapshot | None) -> list[str]:
+    if snapshot is None:
+        return ["—"]
+    return [
+        f"configured_limit={snapshot.configured_limit_per_minute}",
+        f"effective_limit={snapshot.effective_limit_per_minute}",
+        f"requests_last_60s={snapshot.current_usage}",
+        f"backoff_active={snapshot.backoff_active}",
+        f"last429={dt(snapshot.last_429_at)}",
+        f"retry_after_until={dt(snapshot.retry_after_until)}",
+        f"ramp_recovery_eta_seconds={snapshot.ramp_recovery_eta_seconds if snapshot.ramp_recovery_eta_seconds is not None else '—'}",
     ]
 
 

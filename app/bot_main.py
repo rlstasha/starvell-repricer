@@ -74,6 +74,13 @@ async def main() -> None:
         fast1_min_delay_ms=settings.fast1_min_delay_ms,
         fast1_jitter_ms=settings.fast1_jitter_ms,
         my_lot_state_cache_ttl_seconds=settings.my_lot_state_cache_ttl_seconds,
+        price_update_context_cache_ttl_seconds=settings.price_update_context_cache_ttl_seconds,
+        account_limit_ramp_step_per_minute=(
+            settings.ramp_step_per_minute or settings.account_limit_ramp_step_per_minute
+        ),
+        account_limit_ramp_idle_seconds=(
+            settings.ramp_idle_seconds or settings.account_limit_ramp_idle_seconds
+        ),
         rate_limiter_soft_cap_enabled=settings.rate_limiter_soft_cap_enabled,
         scheduler_max_concurrent_positions=settings.scheduler_max_concurrent_positions,
         ultra_fast_min_interval_seconds=settings.ultra_fast_min_interval_seconds,

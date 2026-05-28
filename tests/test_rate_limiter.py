@@ -3,6 +3,7 @@ import pytest
 from app.repricer.rate_limiter import (
     CompositeRateLimiter,
     InMemoryFixedWindowRateLimiter,
+    RedisAdaptiveTokenBucketRateLimiter,
     adaptive_backoff_seconds,
     retry_after_delay_seconds,
     transport_backoff_seconds,
@@ -96,3 +97,22 @@ def test_x_rate_limit_reset_is_used_when_remaining_is_zero() -> None:
         {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "130"},
         now=100.0,
     ) == 30.0
+
+
+def test_adaptive_limiter_ramp_recovery_eta_uses_configured_step_and_idle() -> None:
+    limiter = RedisAdaptiveTokenBucketRateLimiter(
+        redis=object(),
+        configured_limit_per_minute=700,
+        initial_effective_limit_per_minute=700,
+        ramp_step_per_minute=30,
+        ramp_idle_seconds=60,
+    )
+
+    eta = limiter._ramp_recovery_eta_seconds(
+        state={"last_ramp_at_epoch": "100"},
+        now=100,
+        effective_limit=640,
+        retry_after_until_epoch=None,
+    )
+
+    assert eta == 120.0

@@ -7,7 +7,11 @@ from sqlalchemy.ext.asyncio.session import AsyncSession
 from app.core.config import Settings
 from app.db.models import Position, PriceUpdateLog, UpdateStatus, WorkerHeartbeat, WorkerState
 from app.db.repositories import AppSettingsRepository, PositionRepository, WorkerHeartbeatRepository, WorkerStateRepository
-from app.repricer.rate_limiter import RedisFixedWindowRateLimiter
+from app.repricer.rate_limiter import (
+    RateLimitSnapshot,
+    RedisAdaptiveTokenBucketRateLimiter,
+    RedisTokenBucketRateLimiter,
+)
 
 
 @dataclass(frozen=True)
@@ -24,6 +28,7 @@ class TelegramStatusContext:
     error_count: int
     positions_by_amount: dict[int, Position]
     last_position: Position | None
+    limiter_snapshot: RateLimitSnapshot | None = None
 
 
 async def load_telegram_status_context(
@@ -33,6 +38,7 @@ async def load_telegram_status_context(
     redis: Redis,
 ) -> TelegramStatusContext:
     request_usage = await current_request_usage(settings=settings, redis=redis)
+    limiter_snapshot = await current_limiter_snapshot(settings=settings, redis=redis)
     async with session_factory() as session:
         app_settings = AppSettingsRepository(session)
         positions = PositionRepository(session)
@@ -66,22 +72,51 @@ async def load_telegram_status_context(
         error_count=error_count,
         positions_by_amount=positions_by_amount,
         last_position=last_position,
+        limiter_snapshot=limiter_snapshot,
     )
 
 
 async def current_request_usage(*, settings: Settings, redis: Redis) -> int:
-    limiter = RedisFixedWindowRateLimiter(
+    snapshot = await current_limiter_snapshot(settings=settings, redis=redis)
+    if snapshot is not None:
+        return snapshot.current_usage
+    limiter = RedisTokenBucketRateLimiter(
         redis,
         limit=(
             settings.global_request_limit_per_minute
             if settings.proxy_mode == "enabled"
             else settings.request_limit_per_minute
         ),
-        window_seconds=60,
         key_prefix=(
-            "repricer:rate-limit:global"
+            "repricer:token-bucket:global"
             if settings.proxy_mode == "enabled"
-            else "repricer:rate-limit"
+            else "repricer:token-bucket"
         ),
     )
     return await limiter.current_usage()
+
+
+async def current_limiter_snapshot(
+    *,
+    settings: Settings,
+    redis: Redis,
+) -> RateLimitSnapshot | None:
+    if settings.proxy_mode != "enabled" or not settings.token_limit_mode:
+        return None
+    limiter = RedisAdaptiveTokenBucketRateLimiter(
+        redis,
+        configured_limit_per_minute=settings.global_request_limit_per_minute,
+        initial_effective_limit_per_minute=settings.account_effective_limit_per_minute,
+        min_limit_per_minute=settings.account_min_limit_per_minute,
+        decrease_step_per_minute=settings.account_limit_decrease_step_per_minute,
+        ramp_step_per_minute=(
+            settings.ramp_step_per_minute
+            or settings.account_limit_ramp_step_per_minute
+        ),
+        ramp_idle_seconds=(
+            settings.ramp_idle_seconds
+            or settings.account_limit_ramp_idle_seconds
+        ),
+        key_prefix="repricer:account-token-limit",
+    )
+    return await limiter.snapshot()

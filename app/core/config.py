@@ -50,6 +50,7 @@ class Settings(BaseSettings):
     market_http_max_connections: int = Field(default=20, ge=1)
     market_http_max_keepalive_connections: int = Field(default=10, ge=0)
     my_lot_state_cache_ttl_seconds: float = Field(default=30.0, ge=0, le=60)
+    price_update_context_cache_ttl_seconds: float = Field(default=300.0, ge=0, le=3600)
     enable_real_price_writes: bool = False
     market_update_lot_price_url: str = ""
     market_update_lot_price_method: str = "POST"
@@ -87,17 +88,19 @@ class Settings(BaseSettings):
     safe_mode_cooldown_seconds: float = Field(default=300.0, ge=1)
 
     request_limit_per_minute: int = Field(default=100, ge=1)
-    global_request_limit_per_minute: int = Field(default=700, ge=1)
+    global_request_limit_per_minute: int = Field(default=240, ge=1)
     token_limit_mode: bool = True
     rate_limiter_soft_cap_enabled: bool = True
-    account_effective_limit_per_minute: int = Field(default=700, ge=1)
+    account_effective_limit_per_minute: int = Field(default=240, ge=1)
     account_min_limit_per_minute: int = Field(default=60, ge=1)
     account_limit_decrease_step_per_minute: int = Field(default=30, ge=1)
-    account_limit_ramp_step_per_minute: int = Field(default=10, ge=1)
-    account_limit_ramp_idle_seconds: float = Field(default=600.0, ge=1)
-    worker_fast_1_request_limit_per_minute: int = Field(default=280, ge=1)
-    worker_fast_2_request_limit_per_minute: int = Field(default=280, ge=1)
-    worker_slow_request_limit_per_minute: int = Field(default=140, ge=1)
+    account_limit_ramp_step_per_minute: int = Field(default=30, ge=1)
+    account_limit_ramp_idle_seconds: float = Field(default=60.0, ge=1)
+    ramp_step_per_minute: int | None = Field(default=None, ge=1)
+    ramp_idle_seconds: float | None = Field(default=None, ge=1)
+    worker_fast_1_request_limit_per_minute: int = Field(default=100, ge=1)
+    worker_fast_2_request_limit_per_minute: int = Field(default=90, ge=1)
+    worker_slow_request_limit_per_minute: int = Field(default=50, ge=1)
     worker_fast_1_positions: str = "500,800,1000"
     worker_fast_2_positions: str = "400,1200,1700,2000"
     worker_slow_positions: str = "40,80,200,2100,2500,3600,4500,10000,22500"

@@ -233,6 +233,7 @@ async def show_limits(
             heartbeats=status_context.heartbeats,
             request_usage=status_context.request_usage,
             global_limit=settings.global_request_limit_per_minute,
+            limiter_snapshot=status_context.limiter_snapshot,
         ),
         reply_markup=back_to_misc_keyboard(),
     )
@@ -312,6 +313,7 @@ async def show_technical_status(
             recent_errors=status_context.recent_errors,
             group_infos=settings.worker_group_infos,
             settings=settings,
+            limiter_snapshot=status_context.limiter_snapshot,
         ),
         reply_markup=back_to_misc_keyboard(),
     )

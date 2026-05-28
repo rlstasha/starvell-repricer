@@ -140,6 +140,7 @@ def choose_dynamic_delay(
     change_score: float,
     error_score: float = 0.0,
     backoff_active: bool = False,
+    backoff_reason: str = "backoff_after_429",
     previous_delay_seconds: float | None = None,
     random_uniform=random.uniform,
 ) -> DelayDecision:
@@ -155,7 +156,7 @@ def choose_dynamic_delay(
         )
         return DelayDecision(
             delay_seconds=round(delay, 2),
-            reason="backoff_after_429",
+            reason=backoff_reason,
             range_min_seconds=timing.backoff_min_seconds,
             range_max_seconds=timing.backoff_max_seconds,
         )
