@@ -210,6 +210,8 @@ class StarvellClient:
         url: str,
         *,
         request_type: str,
+        position_amount: int | None = None,
+        lot_id: str | None = None,
         **kwargs,
     ) -> httpx.Response:
         await self._ensure_http_client()
@@ -293,11 +295,27 @@ class StarvellClient:
                 method=method,
                 url=url,
                 request_type=request_type,
+                position_amount=position_amount,
+                lot_id=lot_id,
                 status_code=response.status_code,
                 proxy_profile=self.proxy_profile or "direct",
                 proxy=mask_proxy_url(self.proxy_url),
                 http2_enabled=self.settings.market_http2_enabled and not self._http2_disabled,
             )
+            if response.status_code == 429:
+                self.logger.warning(
+                    "starvell_rate_limited",
+                    method=method,
+                    endpoint=url,
+                    request_type=request_type,
+                    worker_group=self.proxy_profile or "direct",
+                    proxy_profile=self.proxy_profile or "direct",
+                    position_amount=position_amount,
+                    lot_id=lot_id,
+                    status_code=response.status_code,
+                    retry_after=response.headers.get("Retry-After"),
+                    **await self._rate_limit_usage_diagnostics(),
+                )
             response.raise_for_status()
             return response
 
@@ -321,6 +339,22 @@ class StarvellClient:
             proxy=mask_proxy_url(self.proxy_url),
         )
         return True
+
+    async def _rate_limit_usage_diagnostics(self) -> dict[str, int]:
+        if hasattr(self.rate_limiter, "usage_diagnostics"):
+            return dict(await self.rate_limiter.usage_diagnostics())
+        if hasattr(self.rate_limiter, "usage_in_window"):
+            usage = int(await self.rate_limiter.usage_in_window(60))
+        else:
+            usage = int(await self.rate_limiter.current_usage())
+        return {
+            "requests_last_5s": usage,
+            "requests_last_10s": usage,
+            "requests_last_30s": usage,
+            "requests_last_60s": usage,
+            "profile_requests_last_60s": usage,
+            "account_requests_last_60s": usage,
+        }
 
     async def _get_json(self, url: str, *, request_type: str) -> tuple[Any, int]:
         response = await self._request("GET", url, request_type=request_type)
@@ -454,6 +488,8 @@ class StarvellClient:
             "POST",
             self.settings.market_offers_api_url,
             request_type="market_offers",
+            position_amount=position_amount,
+            lot_id=lot_id,
             json=request_payload,
         )
         payload = response.json()
@@ -487,6 +523,8 @@ class StarvellClient:
             "GET",
             self.settings.market_offers_url,
             request_type="market_offers",
+            position_amount=position_amount,
+            lot_id=lot_id,
         )
         raw_items = _extract_market_offer_items_from_html(response.text)
         offers = parse_starvell_market_offers_payload(
@@ -689,6 +727,8 @@ class StarvellClient:
             "GET",
             f"/offers/{lot_id}",
             request_type="my_lot",
+            position_amount=position_amount,
+            lot_id=lot_id,
         )
         own_lot = parse_starvell_own_lot(
             response.text,
@@ -774,6 +814,8 @@ class StarvellClient:
                 url=url,
                 payload=payload,
                 content_type=request_content_type,
+                position_amount=position_amount,
+                lot_id=str(lot_id),
             )
         except httpx.HTTPStatusError as exc:
             self._forget_own_lot(str(lot_id))
@@ -881,6 +923,8 @@ class StarvellClient:
                         url=url,
                         payload=candidate.payload,
                         content_type=request_content_type,
+                        position_amount=position_amount,
+                        lot_id=str(lot_id),
                     )
                 except httpx.HTTPStatusError as exc:
                     attempt = _price_update_attempt_result(
@@ -945,6 +989,8 @@ class StarvellClient:
                     "GET",
                     path,
                     request_type="price_update_context",
+                    position_amount=position_amount,
+                    lot_id=lot_id,
                 )
             except httpx.HTTPStatusError:
                 continue
@@ -1028,6 +1074,8 @@ class StarvellClient:
         url: str,
         payload: dict[str, Any],
         content_type: str,
+        position_amount: int | None = None,
+        lot_id: str | None = None,
     ) -> httpx.Response:
         normalized_content_type = content_type.strip().lower()
         if normalized_content_type == "form":
@@ -1035,12 +1083,16 @@ class StarvellClient:
                 method,
                 url,
                 request_type="price_update",
+                position_amount=position_amount,
+                lot_id=lot_id,
                 data=_form_payload(payload),
             )
         return await self._request(
             method,
             url,
             request_type="price_update",
+            position_amount=position_amount,
+            lot_id=lot_id,
             json=payload,
         )
 

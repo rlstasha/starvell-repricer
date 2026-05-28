@@ -563,7 +563,16 @@ class RepricerScheduler:
         result_status: str,
     ):
         multiplier = self.settings.post_update_interval_multiplier
-        if backoff_active or result_status != "success" or multiplier == 1.0:
+        enabled_positions = self.settings.post_update_interval_position_amounts
+        if (
+            backoff_active
+            or result_status != "success"
+            or multiplier == 1.0
+            or (
+                enabled_positions
+                and position.robux_amount not in enabled_positions
+            )
+        ):
             return decision, None
         delay = round(max(timing.min_seconds * multiplier, 0.01), 2)
         return (

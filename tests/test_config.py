@@ -29,13 +29,22 @@ def test_priority_percentages_must_sum_to_100() -> None:
         Settings(_env_file=None, high_priority_percent=70, normal_priority_percent=20)
 
 
-def test_worker_groups_use_two_fast_servers_and_one_slow_server() -> None:
+def test_worker_groups_use_two_fast_servers_and_one_slow_server(monkeypatch) -> None:
+    for env_name in (
+        "PROXY_FAST_1_POSITIONS",
+        "PROXY_FAST_2_POSITIONS",
+        "PROXY_SLOW_POSITIONS",
+        "WORKER_FAST_1_POSITIONS",
+        "WORKER_FAST_2_POSITIONS",
+        "WORKER_SLOW_POSITIONS",
+    ):
+        monkeypatch.delenv(env_name, raising=False)
     settings = Settings(_env_file=None)
 
     groups = {info.name: info for info in settings.worker_group_infos}
 
-    assert groups["fast_1"].positions == (500, 800, 1000)
-    assert groups["fast_2"].positions == (400, 1200, 1700, 2000)
+    assert groups["fast_1"].positions == (500,)
+    assert groups["fast_2"].positions == (400, 800, 1000, 1200, 1700, 2000)
     assert groups["slow"].positions == (40, 80, 200, 2100, 2500, 3600, 4500, 10000, 22500)
 
 
@@ -130,6 +139,7 @@ def test_request_pacing_defaults_are_safe_without_group_overrides() -> None:
     assert settings.fast_mode_cooldown_min_interval_seconds == 1.5
     assert settings.fast_mode_cooldown_max_interval_seconds == 2.5
     assert settings.post_update_interval_multiplier == 1.0
+    assert settings.post_update_interval_position_amounts == (500,)
 
 
 def test_request_pacing_can_be_overridden_per_worker_group() -> None:

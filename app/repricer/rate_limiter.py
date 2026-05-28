@@ -75,6 +75,9 @@ class RateLimiter(Protocol):
     async def current_usage(self) -> int:
         ...
 
+    async def usage_in_window(self, window_seconds: int) -> int:
+        ...
+
 
 @dataclass(frozen=True)
 class RateLimitSnapshot:
@@ -138,6 +141,9 @@ class RedisFixedWindowRateLimiter:
         value = await self.redis.get(self._window_key())
         return int(value or 0)
 
+    async def usage_in_window(self, window_seconds: int) -> int:
+        return await self.current_usage()
+
 
 class RedisTokenBucketRateLimiter:
     """Redis-backed token bucket limiter with a per-minute usage counter."""
@@ -200,7 +206,14 @@ class RedisTokenBucketRateLimiter:
             await self.sleeper(self._last_wait_seconds)
 
     async def current_usage(self) -> int:
-        return await _redis_sliding_usage_count(self.redis, self._sliding_usage_key())
+        return await self.usage_in_window(60)
+
+    async def usage_in_window(self, window_seconds: int) -> int:
+        return await _redis_sliding_usage_count(
+            self.redis,
+            self._sliding_usage_key(),
+            window_seconds=window_seconds,
+        )
 
     async def _increment_usage(self, cost: int) -> None:
         now = time.time()
@@ -287,7 +300,14 @@ class RedisAdaptiveTokenBucketRateLimiter:
             await self.sleeper(self._last_wait_seconds)
 
     async def current_usage(self) -> int:
-        return await _redis_sliding_usage_count(self.redis, self._sliding_usage_key())
+        return await self.usage_in_window(60)
+
+    async def usage_in_window(self, window_seconds: int) -> int:
+        return await _redis_sliding_usage_count(
+            self.redis,
+            self._sliding_usage_key(),
+            window_seconds=window_seconds,
+        )
 
     async def record_response(
         self,
@@ -478,6 +498,9 @@ class NoopRateLimiter:
     async def current_usage(self) -> int:
         return 0
 
+    async def usage_in_window(self, window_seconds: int) -> int:
+        return 0
+
 
 class CompositeRateLimiter:
     """Profile limiter + global limiter + small pacing/backoff guard."""
@@ -521,6 +544,21 @@ class CompositeRateLimiter:
 
     async def current_usage(self) -> int:
         return await self.profile_limiter.current_usage()
+
+    async def usage_in_window(self, window_seconds: int) -> int:
+        if hasattr(self.profile_limiter, "usage_in_window"):
+            return await self.profile_limiter.usage_in_window(window_seconds)
+        return await self.profile_limiter.current_usage()
+
+    async def usage_diagnostics(self, windows: tuple[int, ...] = (5, 10, 30, 60)) -> dict[str, int]:
+        diagnostics: dict[str, int] = {}
+        for window in windows:
+            profile_usage = await _limiter_usage_in_window(self.profile_limiter, window)
+            account_usage = await _limiter_usage_in_window(self.global_limiter, window)
+            diagnostics[f"requests_last_{window}s"] = account_usage
+            diagnostics[f"profile_requests_last_{window}s"] = profile_usage
+            diagnostics[f"account_requests_last_{window}s"] = account_usage
+        return diagnostics
 
     async def record_response(
         self,
@@ -609,6 +647,9 @@ class InMemoryFixedWindowRateLimiter:
     async def current_usage(self) -> int:
         return self._counts[self._window()]
 
+    async def usage_in_window(self, window_seconds: int) -> int:
+        return await self.current_usage()
+
 
 def retry_after_delay_seconds(
     headers: Mapping[str, str],
@@ -688,14 +729,28 @@ def _pipeline_add_sliding_usage(pipe, key: str, *, now: float, cost: int) -> Non
     pipe.expire(key, 125)
 
 
-async def _redis_sliding_usage_count(redis: Redis, key: str, *, now: float | None = None) -> int:
+async def _redis_sliding_usage_count(
+    redis: Redis,
+    key: str,
+    *,
+    window_seconds: int = 60,
+    now: float | None = None,
+) -> int:
     current_time = time.time() if now is None else now
     pipe = redis.pipeline(transaction=True)
     pipe.zremrangebyscore(key, "-inf", current_time - 60)
-    pipe.zcount(key, current_time - 60, "+inf")
+    pipe.zcount(key, current_time - window_seconds, "+inf")
     pipe.expire(key, 125)
     _, count, _ = await pipe.execute()
     return int(count or 0)
+
+
+async def _limiter_usage_in_window(limiter, window_seconds: int) -> int:
+    if hasattr(limiter, "usage_in_window"):
+        return int(await limiter.usage_in_window(window_seconds))
+    if hasattr(limiter, "current_usage"):
+        return int(await limiter.current_usage())
+    return 0
 
 
 def _datetime_from_epoch(value: float | None) -> datetime | None:

@@ -1210,3 +1210,47 @@ async def test_starvell_client_applies_proxy_backoff_on_transport_error() -> Non
             await starvell.fetch_text("/api/test", request_type="test")
 
     assert limiter.backoffs == ["proxy", "proxy"]
+
+
+@pytest.mark.asyncio
+async def test_starvell_client_rate_limit_diagnostics_include_short_windows() -> None:
+    class DiagnosticLimiter:
+        async def acquire(self) -> None:
+            return None
+
+        async def current_usage(self) -> int:
+            return 60
+
+        async def usage_diagnostics(self) -> dict[str, int]:
+            return {
+                "requests_last_5s": 2,
+                "profile_requests_last_5s": 1,
+                "account_requests_last_5s": 2,
+                "requests_last_10s": 4,
+                "profile_requests_last_10s": 2,
+                "account_requests_last_10s": 4,
+                "requests_last_30s": 12,
+                "profile_requests_last_30s": 7,
+                "account_requests_last_30s": 12,
+                "requests_last_60s": 55,
+                "profile_requests_last_60s": 30,
+                "account_requests_last_60s": 55,
+            }
+
+    settings = Settings(_env_file=None)
+    starvell = StarvellClient(settings, DiagnosticLimiter())
+
+    assert await starvell._rate_limit_usage_diagnostics() == {
+        "requests_last_5s": 2,
+        "profile_requests_last_5s": 1,
+        "account_requests_last_5s": 2,
+        "requests_last_10s": 4,
+        "profile_requests_last_10s": 2,
+        "account_requests_last_10s": 4,
+        "requests_last_30s": 12,
+        "profile_requests_last_30s": 7,
+        "account_requests_last_30s": 12,
+        "requests_last_60s": 55,
+        "profile_requests_last_60s": 30,
+        "account_requests_last_60s": 55,
+    }

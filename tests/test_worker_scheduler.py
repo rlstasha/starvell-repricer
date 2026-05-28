@@ -290,7 +290,7 @@ def test_hot_mode_does_not_override_backoff(monkeypatch) -> None:
         ),
     )
 
-    assert state.delay_reason == "backoff_after_429"
+    assert state.delay_reason == "backoff_after_error"
     assert state.current_interval_seconds >= 2.0
 
 
@@ -364,6 +364,43 @@ def test_post_update_multiplier_keeps_default_scheduler_behavior(monkeypatch) ->
 
     assert state.delay_reason != "post_update_followup"
     assert state.current_interval_seconds >= settings.ultra_fast_min_interval_seconds
+
+
+def test_post_update_multiplier_is_scoped_to_configured_positions(monkeypatch) -> None:
+    monkeypatch.setattr("app.repricer.scheduler.random.uniform", lambda low, high: high)
+    settings = Settings(
+        _env_file=None,
+        worker_group="fast_2",
+        post_update_interval_multiplier=0.5,
+        post_update_interval_positions="500",
+    )
+    scheduler = RepricerScheduler(settings=settings, session_factory=object(), redis=object())
+    scheduler.schedule_runtime = {
+        800: RuntimeScheduleState(
+            position_amount=800,
+            lot_id="2002",
+            proxy_profile="fast_2",
+            base_interval_seconds=2.4,
+            current_interval_seconds=2.4,
+            next_run_monotonic=1.0,
+            last_checked_at=None,
+            last_competitor_price=Decimal("528.20"),
+            last_own_price=Decimal("528.10"),
+        )
+    }
+
+    state = scheduler._update_schedule_after_result(
+        Position(robux_amount=800),
+        _SchedulerResult(
+            status="success",
+            reason="competitor_undercut",
+            old_price=Decimal("528.10"),
+            new_price=Decimal("528.00"),
+            competitor_price=Decimal("528.20"),
+        ),
+    )
+
+    assert state.delay_reason != "post_update_followup"
 
 
 @pytest.mark.asyncio

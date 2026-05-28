@@ -101,8 +101,8 @@ class Settings(BaseSettings):
     worker_fast_1_request_limit_per_minute: int = Field(default=100, ge=1)
     worker_fast_2_request_limit_per_minute: int = Field(default=90, ge=1)
     worker_slow_request_limit_per_minute: int = Field(default=50, ge=1)
-    worker_fast_1_positions: str = "500,800,1000"
-    worker_fast_2_positions: str = "400,1200,1700,2000"
+    worker_fast_1_positions: str = "500"
+    worker_fast_2_positions: str = "400,800,1000,1200,1700,2000"
     worker_slow_positions: str = "40,80,200,2100,2500,3600,4500,10000,22500"
     worker_group: str = WORKER_GROUP_ALL
     public_ip: str | None = None
@@ -139,6 +139,7 @@ class Settings(BaseSettings):
     fast_mode_cooldown_min_interval_seconds: float = Field(default=1.5, ge=0.01)
     fast_mode_cooldown_max_interval_seconds: float = Field(default=2.5, ge=0.01)
     post_update_interval_multiplier: float = Field(default=1.0, ge=0.01, le=10.0)
+    post_update_interval_positions: str = "500"
 
     @field_validator("owner_telegram_ids")
     @classmethod
@@ -235,6 +236,7 @@ class Settings(BaseSettings):
         "proxy_fast_1_positions",
         "proxy_fast_2_positions",
         "proxy_slow_positions",
+        "post_update_interval_positions",
     )
     @classmethod
     def validate_worker_positions(cls, value: str) -> str:
@@ -359,6 +361,10 @@ class Settings(BaseSettings):
         if group == WORKER_GROUP_SLOW:
             return self.slow_idle_sleep_seconds
         return self.scheduler_idle_sleep_seconds
+
+    @property
+    def post_update_interval_position_amounts(self) -> tuple[int, ...]:
+        return parse_position_list(self.post_update_interval_positions, ())
 
     @property
     def worker_group_positions(self) -> dict[str, tuple[int, ...]]:

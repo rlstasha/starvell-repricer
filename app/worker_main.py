@@ -120,6 +120,7 @@ async def _run_single_worker(settings, session_factory, redis: Redis) -> None:
         fast_mode_min_interval_seconds=settings.fast_mode_min_interval_seconds,
         fast_mode_max_interval_seconds=settings.fast_mode_max_interval_seconds,
         post_update_interval_multiplier=settings.post_update_interval_multiplier,
+        post_update_interval_positions=list(settings.post_update_interval_position_amounts),
     )
     scheduler = RepricerScheduler(
         settings=settings,

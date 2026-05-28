@@ -116,3 +116,40 @@ def test_adaptive_limiter_ramp_recovery_eta_uses_configured_step_and_idle() -> N
     )
 
     assert eta == 120.0
+
+
+@pytest.mark.asyncio
+async def test_composite_limiter_exposes_account_and_profile_window_diagnostics() -> None:
+    class FakeWindowLimiter:
+        def __init__(self, base: int) -> None:
+            self.base = base
+
+        async def acquire(self, cost: int = 1) -> None:
+            return None
+
+        async def try_acquire(self, cost: int = 1) -> bool:
+            return True
+
+        async def current_usage(self) -> int:
+            return self.base + 60
+
+        async def usage_in_window(self, window_seconds: int) -> int:
+            return self.base + window_seconds
+
+    limiter = CompositeRateLimiter(
+        profile_limiter=FakeWindowLimiter(100),
+        global_limiter=FakeWindowLimiter(200),
+        min_delay_ms=0,
+        jitter_ms=0,
+    )
+
+    diagnostics = await limiter.usage_diagnostics((5, 60))
+
+    assert diagnostics == {
+        "requests_last_5s": 205,
+        "profile_requests_last_5s": 105,
+        "account_requests_last_5s": 205,
+        "requests_last_60s": 260,
+        "profile_requests_last_60s": 160,
+        "account_requests_last_60s": 260,
+    }

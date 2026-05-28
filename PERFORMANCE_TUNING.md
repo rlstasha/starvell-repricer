@@ -237,3 +237,78 @@ Interpretation:
 - `700` produced the best useful score in this short probe, but it is a supervised benchmark setting only.
 - `800` did not improve useful throughput and increased skipped rate versus `700`; do not go higher without a longer soak.
 - Opt-in hot/fast mode reduced 500R average cycle time, but it caused skipped spam and lower useful updates per request. Keep it disabled by default.
+
+## 500R isolated fast_1 live test
+
+Date: 2026-05-28
+
+Goal: protect `500R` with its own `fast_1` profile while keeping account/proxy load below
+the observed stable ceiling.
+
+Runtime overrides:
+
+```env
+GLOBAL_REQUEST_LIMIT_PER_MINUTE=240
+ACCOUNT_EFFECTIVE_LIMIT_PER_MINUTE=240
+WORKER_FAST_1_POSITIONS=500
+WORKER_FAST_2_POSITIONS=400,800,1000,1200,1700,2000
+WORKER_FAST_1_REQUEST_LIMIT_PER_MINUTE=100
+WORKER_FAST_2_REQUEST_LIMIT_PER_MINUTE=90
+WORKER_SLOW_REQUEST_LIMIT_PER_MINUTE=50
+POST_UPDATE_INTERVAL_MULTIPLIER=0.5
+POST_UPDATE_INTERVAL_POSITIONS=500
+SCHEDULER_MAX_CONCURRENT_POSITIONS=2
+RATE_LIMITER_SOFT_CAP_ENABLED=true
+```
+
+15-minute live result:
+
+| Metric | Value |
+| --- | ---: |
+| 429 / rate_limited | 0 |
+| price_update_failed | 0 |
+| backoff_after_429 | 0 |
+| max requests / 60s | 238 |
+| requests/min | 174.39 |
+| price_updated/min | 43.56 |
+| skipped/min | 97.52 |
+| useful_updates_per_100_requests | 24.98 |
+| rate_limiter_wait_count | 17024 |
+| 500R cycle avg / p95 | 306 / 974 ms |
+| 800 cycle avg / p95 | 1116 / 2283 ms |
+| 1000 cycle avg / p95 | 1372 / 2723 ms |
+| parallel_fetch true | 93.96% |
+| 500R parallel_fetch true | 99.39% |
+| own_lot_cache_hit | 94.0% |
+| post_update_followup logs | 75 |
+| proxy_connect_error | 0 |
+| retried transport errors | 4 |
+
+Transport warnings were isolated retried `RemoteProtocolError` events:
+
+```text
+fast_1 / market_offers: 2
+fast_2 / market_offers: 1
+slow / my_lot: 1
+```
+
+No write failures followed these warnings.
+
+Interpretation:
+
+- Stability goal passed: no 429, no write failures, no account backoff, no proxy connect series.
+- 500R speed improved materially versus the previous 10-minute safe run (`~494ms avg / 1709ms p95`
+  before, `~306ms avg / 974ms p95` after).
+- Useful updates stayed strong, but `skipped/min` increased. The isolated 500R layout improves the
+  hot position at the cost of more idle checks on the larger `fast_2` group.
+- `fast_2` and `slow` sit at their configured sliding-window ceilings (`90` and `50`), while `fast_1`
+  uses only about `28-34/100` requests per 60s. If more speed is needed, the next safer experiment is
+  reducing slow-position frequency or moving fewer positions into `fast_2`, not raising global limits.
+
+Recommendation:
+
+```text
+Keep this layout only if 500R latency is the priority.
+Do not raise GLOBAL/ACCOUNT above 240 while skipped/min is this high.
+Next optimization candidate: make slow timing configurable and test 9-15s slow intervals.
+```
