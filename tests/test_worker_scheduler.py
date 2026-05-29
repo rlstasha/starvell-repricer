@@ -23,6 +23,9 @@ def clean_runtime_env(monkeypatch):
         "WORKER_FAST_1_REQUEST_LIMIT_PER_MINUTE",
         "WORKER_FAST_2_REQUEST_LIMIT_PER_MINUTE",
         "WORKER_SLOW_REQUEST_LIMIT_PER_MINUTE",
+        "DEDICATED_POSITION_TASKS_ENABLED",
+        "DEDICATED_POSITION_TASKS",
+        "DEDICATED_POSITION_IDLE_SLEEP_SECONDS",
     ):
         monkeypatch.delenv(env_name, raising=False)
 
@@ -48,6 +51,45 @@ def test_worker_scheduler_filters_fast_2_positions_only() -> None:
     filtered = scheduler._filter_assigned_positions(positions)
 
     assert [position.robux_amount for position in filtered] == [400, 1200, 2000]
+
+
+def test_worker_scheduler_excludes_dedicated_positions_from_heap_worker() -> None:
+    settings = Settings(
+        _env_file=None,
+        worker_group="fast_1",
+        dedicated_position_tasks_enabled=True,
+        dedicated_position_tasks="500",
+    )
+    scheduler = RepricerScheduler(
+        settings=settings,
+        session_factory=object(),
+        redis=object(),
+    )
+    positions = [
+        Position(robux_amount=500),
+        Position(robux_amount=800),
+        Position(robux_amount=1000),
+    ]
+
+    filtered = scheduler._filter_assigned_positions(positions)
+
+    assert [position.robux_amount for position in filtered] == [800, 1000]
+
+
+def test_worker_scheduler_dedicated_positions_are_scoped_to_worker_assignment() -> None:
+    fast_2_settings = Settings(
+        _env_file=None,
+        worker_group="fast_2",
+        dedicated_position_tasks_enabled=True,
+        dedicated_position_tasks="500",
+    )
+    fast_2_scheduler = RepricerScheduler(
+        settings=fast_2_settings,
+        session_factory=object(),
+        redis=object(),
+    )
+
+    assert fast_2_scheduler._dedicated_position_amounts() == set()
 
 
 def test_worker_scheduler_collects_due_positions_with_concurrency_limit() -> None:

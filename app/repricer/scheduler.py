@@ -136,31 +136,143 @@ class RepricerScheduler:
             proxy_profile=self.settings.worker_group,
             proxy_url=proxy_url,
         ) as starvell_client:
-            while True:
-                try:
-                    await self.run_once(starvell_client)
-                except Exception as exc:
-                    error = safe_starvell_error_reason(exc)
-                    await self._mark_error(exc)
-                    self.logger.exception(
-                        "repricer_scheduler_cycle_failed",
-                        worker_group=self.settings.worker_group,
-                        error=error,
-                    )
-                    async with self.session_factory() as session:
-                        await WorkerStateRepository(session).mark_cycle(
-                            name=self._worker_state_name(),
-                            position_amount=None,
-                            status="failed",
+            dedicated_tasks = self._start_dedicated_position_tasks(starvell_client)
+            try:
+                while True:
+                    try:
+                        await self.run_once(starvell_client)
+                    except Exception as exc:
+                        error = safe_starvell_error_reason(exc)
+                        await self._mark_error(exc)
+                        self.logger.exception(
+                            "repricer_scheduler_cycle_failed",
+                            worker_group=self.settings.worker_group,
                             error=error,
                         )
-                        await self._write_heartbeat(
-                            session,
-                            status="failed",
-                            dry_run=self.settings.dry_run,
+                        async with self.session_factory() as session:
+                            await WorkerStateRepository(session).mark_cycle(
+                                name=self._worker_state_name(),
+                                position_amount=None,
+                                status="failed",
+                                error=error,
+                            )
+                            await self._write_heartbeat(
+                                session,
+                                status="failed",
+                                dry_run=self.settings.dry_run,
+                            )
+                            await session.commit()
+                        await asyncio.sleep(self._idle_sleep_seconds())
+            finally:
+                for task in dedicated_tasks:
+                    task.cancel()
+                if dedicated_tasks:
+                    await asyncio.gather(*dedicated_tasks, return_exceptions=True)
+
+    def _dedicated_position_amounts(self) -> set[int]:
+        if not self.settings.dedicated_position_tasks_enabled:
+            return set()
+        assigned = set(self.settings.assigned_positions)
+        return {
+            amount
+            for amount in self.settings.dedicated_position_task_amounts
+            if amount in assigned
+        }
+
+    def _start_dedicated_position_tasks(self, starvell_client: StarvellClient) -> list[asyncio.Task]:
+        amounts = sorted(self._dedicated_position_amounts())
+        if not amounts:
+            return []
+        self.logger.info(
+            "repricer_dedicated_position_tasks_started",
+            worker_group=self.settings.worker_group,
+            positions=amounts,
+            idle_sleep_seconds=self.settings.dedicated_position_idle_sleep_seconds,
+        )
+        return [
+            asyncio.create_task(
+                self._run_dedicated_position_loop(amount, starvell_client),
+                name=f"repricer-dedicated-{self.settings.worker_group}-{amount}",
+            )
+            for amount in amounts
+        ]
+
+    async def _run_dedicated_position_loop(
+        self,
+        amount: int,
+        starvell_client: StarvellClient,
+    ) -> None:
+        while True:
+            try:
+                if self._safe_mode_active():
+                    await asyncio.sleep(
+                        max(
+                            min(
+                                self._safe_mode_remaining_seconds(),
+                                self.settings.dedicated_position_idle_sleep_seconds,
+                            ),
+                            self.settings.dedicated_position_idle_sleep_seconds,
                         )
+                    )
+                    continue
+
+                async with self.session_factory() as session:
+                    position = await PositionRepository(session).get_by_amount(amount)
+                    if (
+                        position is None
+                        or not position.enabled
+                        or amount not in set(self.settings.assigned_positions)
+                    ):
                         await session.commit()
-                    await asyncio.sleep(self._idle_sleep_seconds())
+                        await asyncio.sleep(self._idle_sleep_seconds())
+                        continue
+                    await self._ensure_runtime_state(position, session)
+                    state = self.schedule_runtime.get(amount)
+                    if state is None:
+                        await session.commit()
+                        await asyncio.sleep(self.settings.dedicated_position_idle_sleep_seconds)
+                        continue
+                    if await self._consume_price_change_event(amount):
+                        state.next_run_monotonic = min(state.next_run_monotonic, time.monotonic())
+                        self.logger.info(
+                            "repricer_price_change_event_consumed",
+                            worker_group=self.settings.worker_group,
+                            positions=[amount],
+                            source="price_watcher",
+                            dedicated_task=True,
+                        )
+                    wait_seconds = max(state.next_run_monotonic - time.monotonic(), 0.0)
+                    if wait_seconds > 0:
+                        await session.commit()
+                        await asyncio.sleep(
+                            min(wait_seconds, self.settings.dedicated_position_idle_sleep_seconds)
+                        )
+                        continue
+                    dry_run = await AppSettingsRepository(session).get_bool(
+                        "dry_run",
+                        default=self.settings.dry_run,
+                    )
+                    await session.commit()
+
+                self.logger.info(
+                    "repricer_dedicated_position_due",
+                    worker_group=self.settings.worker_group,
+                    position_amount=amount,
+                )
+                await self._process_due_position(position, starvell_client, dry_run)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                error = safe_starvell_error_reason(exc)
+                await self._mark_error(exc)
+                self.logger.exception(
+                    "repricer_dedicated_position_failed",
+                    worker_group=self.settings.worker_group,
+                    position_amount=amount,
+                    error=error,
+                    error_type=type(exc).__name__,
+                )
+                await asyncio.sleep(self._idle_sleep_seconds())
 
     async def run_once(self, starvell_client: StarvellClient) -> None:
         if self._safe_mode_active():
@@ -252,57 +364,88 @@ class RepricerScheduler:
             for item in await repository.list_all()
         }
         now = time.monotonic()
-        active_amounts = {position.robux_amount for position in positions}
+        active_amounts = {position.robux_amount for position in positions} | self._dedicated_position_amounts()
 
         for position in positions:
-            timing = timing_for_position(self.settings.worker_group, position.robux_amount)
             existing = self.schedule_runtime.get(position.robux_amount)
             if existing is not None:
                 existing.lot_id = position.lot_id
                 continue
 
             persisted = persisted_by_position_id.get(position.id)
-            current_interval = (
-                persisted.current_interval_seconds
-                if persisted is not None
-                else timing.base_seconds
-            )
-            next_run = now
-            if persisted is not None and persisted.last_checked_at is not None:
-                elapsed = (datetime.now(UTC) - persisted.last_checked_at).total_seconds()
-                next_run = now + max(current_interval - elapsed, 0.0)
-            interval_min, interval_max = display_interval_range(
-                self.settings.worker_group,
-                position_amount=position.robux_amount,
-            )
-            self.schedule_runtime[position.robux_amount] = RuntimeScheduleState(
-                position_amount=position.robux_amount,
-                lot_id=position.lot_id,
-                proxy_profile=self.settings.worker_group,
-                base_interval_seconds=timing.base_seconds,
-                current_interval_seconds=current_interval,
-                next_run_monotonic=next_run,
-                last_checked_at=persisted.last_checked_at if persisted else None,
-                last_competitor_price=(
-                    persisted.last_competitor_price
-                    if persisted
-                    else position.state.last_seen_competitor_price if position.state else None
-                ),
-                last_own_price=(
-                    persisted.last_own_price
-                    if persisted
-                    else position.state.current_own_price if position.state else None
-                ),
-                change_score=persisted.change_score if persisted else 0.5,
-                error_score=persisted.error_score if persisted else 0.0,
-                last_429_at=persisted.last_429_at if persisted else None,
-                interval_min_seconds=interval_min,
-                interval_max_seconds=interval_max,
+            self.schedule_runtime[position.robux_amount] = self._build_runtime_state(
+                position=position,
+                persisted=persisted,
+                now_monotonic=now,
             )
 
         for amount in set(self.schedule_runtime) - active_amounts:
             self.schedule_runtime.pop(amount, None)
         self._rebuild_schedule_heap()
+
+    async def _ensure_runtime_state(
+        self,
+        position: Position,
+        session: AsyncSession,
+    ) -> RuntimeScheduleState:
+        existing = self.schedule_runtime.get(position.robux_amount)
+        if existing is not None:
+            existing.lot_id = position.lot_id
+            return existing
+        persisted = await PositionScheduleStateRepository(session).get_by_position_id(position.id)
+        state = self._build_runtime_state(
+            position=position,
+            persisted=persisted,
+            now_monotonic=time.monotonic(),
+        )
+        self.schedule_runtime[position.robux_amount] = state
+        return state
+
+    def _build_runtime_state(
+        self,
+        *,
+        position: Position,
+        persisted,
+        now_monotonic: float,
+    ) -> RuntimeScheduleState:
+        timing = timing_for_position(self.settings.worker_group, position.robux_amount)
+        current_interval = (
+            persisted.current_interval_seconds
+            if persisted is not None
+            else timing.base_seconds
+        )
+        next_run = now_monotonic
+        if persisted is not None and persisted.last_checked_at is not None:
+            elapsed = (datetime.now(UTC) - persisted.last_checked_at).total_seconds()
+            next_run = now_monotonic + max(current_interval - elapsed, 0.0)
+        interval_min, interval_max = display_interval_range(
+            self.settings.worker_group,
+            position_amount=position.robux_amount,
+        )
+        return RuntimeScheduleState(
+            position_amount=position.robux_amount,
+            lot_id=position.lot_id,
+            proxy_profile=self.settings.worker_group,
+            base_interval_seconds=timing.base_seconds,
+            current_interval_seconds=current_interval,
+            next_run_monotonic=next_run,
+            last_checked_at=persisted.last_checked_at if persisted else None,
+            last_competitor_price=(
+                persisted.last_competitor_price
+                if persisted
+                else position.state.last_seen_competitor_price if position.state else None
+            ),
+            last_own_price=(
+                persisted.last_own_price
+                if persisted
+                else position.state.current_own_price if position.state else None
+            ),
+            change_score=persisted.change_score if persisted else 0.5,
+            error_score=persisted.error_score if persisted else 0.0,
+            last_429_at=persisted.last_429_at if persisted else None,
+            interval_min_seconds=interval_min,
+            interval_max_seconds=interval_max,
+        )
 
     def _rebuild_schedule_heap(self) -> None:
         self.schedule_heap = [
@@ -315,19 +458,7 @@ class RepricerScheduler:
         triggered_amounts: list[int] = []
         now = time.monotonic()
         for amount in positions_by_amount:
-            key = f"repricer:price_change_event:{amount}"
-            try:
-                deleted = await self.redis.delete(key)
-            except Exception as exc:
-                self.logger.warning(
-                    "repricer_price_change_event_check_failed",
-                    worker_group=self.settings.worker_group,
-                    position_amount=amount,
-                    error=safe_starvell_error_reason(exc),
-                    error_type=type(exc).__name__,
-                )
-                continue
-            if not deleted:
+            if not await self._consume_price_change_event(amount):
                 continue
             state = self.schedule_runtime.get(amount)
             if state is None:
@@ -344,6 +475,20 @@ class RepricerScheduler:
             positions=triggered_amounts,
             source="price_watcher",
         )
+
+    async def _consume_price_change_event(self, amount: int) -> bool:
+        key = f"repricer:price_change_event:{amount}"
+        try:
+            return bool(await self.redis.delete(key))
+        except Exception as exc:
+            self.logger.warning(
+                "repricer_price_change_event_check_failed",
+                worker_group=self.settings.worker_group,
+                position_amount=amount,
+                error=safe_starvell_error_reason(exc),
+                error_type=type(exc).__name__,
+            )
+            return False
 
     def _next_due_position(self, positions_by_amount: dict[int, Position]) -> Position | None:
         now = time.monotonic()
@@ -748,9 +893,18 @@ class RepricerScheduler:
 
     def _filter_assigned_positions(self, positions):
         if self.settings.worker_group == WORKER_GROUP_ALL:
-            return positions
-        assigned = set(self.settings.assigned_positions)
-        return [position for position in positions if position.robux_amount in assigned]
+            filtered = positions
+        else:
+            assigned = set(self.settings.assigned_positions)
+            filtered = [position for position in positions if position.robux_amount in assigned]
+        dedicated = self._dedicated_position_amounts()
+        if dedicated:
+            filtered = [
+                position
+                for position in filtered
+                if position.robux_amount not in dedicated
+            ]
+        return filtered
 
     async def _mark_idle(self, session: AsyncSession, reason: str) -> None:
         self.logger.warning(

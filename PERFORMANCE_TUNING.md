@@ -57,6 +57,34 @@ FAST1_MIN_DELAY_MS=200
 FAST1_JITTER_MS=100
 ```
 
+## VPS 500R dedicated scheduler task
+
+Date: 2026-05-30
+
+Use `deploy/vps-500r-dedicated-task.env.example` only after the fast1
+low-delay profile has passed a live check. The dedicated task keeps 500R from
+waiting behind other due positions in the heap scheduler. It does not bypass
+the position lock, rate limiter, backoff, StarvellClient, or price strategy.
+
+Expected effect:
+
+```text
+500R scheduler wait: lower during crowded fast1 cycles
+800/1000: remain on bounded heap scheduler
+```
+
+Risk:
+
+```text
+medium
+```
+
+Rollback:
+
+```text
+DEDICATED_POSITION_TASKS_ENABLED=false
+```
+
 ## Safe fast worker benchmark
 
 Date: 2026-05-27

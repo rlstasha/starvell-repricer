@@ -126,6 +126,9 @@ class Settings(BaseSettings):
     fast2_idle_sleep_seconds: float = Field(default=0.1, ge=0.01)
     slow_idle_sleep_seconds: float = Field(default=1.0, ge=0.01)
     scheduler_max_concurrent_positions: int = Field(default=2, ge=1, le=10)
+    dedicated_position_tasks_enabled: bool = False
+    dedicated_position_tasks: str = "500"
+    dedicated_position_idle_sleep_seconds: float = Field(default=0.05, ge=0.01, le=5.0)
     ultra_fast_min_interval_seconds: float = Field(default=0.4, ge=0.01)
     fast1_min_interval_seconds: float = Field(default=0.8, ge=0.01)
     fast2_min_interval_seconds: float = Field(default=2.0, ge=0.01)
@@ -247,6 +250,7 @@ class Settings(BaseSettings):
         "proxy_slow_positions",
         "post_update_interval_positions",
         "price_watcher_positions",
+        "dedicated_position_tasks",
     )
     @classmethod
     def validate_worker_positions(cls, value: str) -> str:
@@ -385,6 +389,10 @@ class Settings(BaseSettings):
     @property
     def price_watcher_position_amounts(self) -> tuple[int, ...]:
         return parse_position_list(self.price_watcher_positions, ())
+
+    @property
+    def dedicated_position_task_amounts(self) -> tuple[int, ...]:
+        return parse_position_list(self.dedicated_position_tasks, ())
 
     @property
     def worker_group_positions(self) -> dict[str, tuple[int, ...]]:
