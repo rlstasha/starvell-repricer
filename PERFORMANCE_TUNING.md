@@ -29,6 +29,34 @@ Telegram polling remains healthy
 requests_last_60s remains stable, without sawtooth resets
 ```
 
+## VPS 500R fast1 low-delay profile
+
+Date: 2026-05-30
+
+Use `deploy/vps-500r-fast1-delay.env.example` only after the safe profile has
+passed a live check. It lowers `fast_1` local pacing while keeping the global
+budget at 240/min and keeping `fast_2`/`slow` on their safe delays.
+
+Expected effect:
+
+```text
+fast1 min delay: 200ms -> 50ms
+fast1 jitter: 100ms -> 25ms
+```
+
+Risk:
+
+```text
+medium
+```
+
+Rollback:
+
+```text
+FAST1_MIN_DELAY_MS=200
+FAST1_JITTER_MS=100
+```
+
 ## Safe fast worker benchmark
 
 Date: 2026-05-27
