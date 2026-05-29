@@ -1,5 +1,34 @@
 # Performance tuning notes
 
+## VPS 500R safe profile
+
+Date: 2026-05-30
+
+Use `deploy/vps-500r-safe.env.example` as the first runtime stage on the VPS.
+It keeps the predictive limiter enabled and keeps `PRICE_WATCHER_ENABLED=false`.
+The goal of this stage is to verify that the new worker distribution and slow
+budget are stable before lowering fast1 delay or enabling dedicated 500R tasks.
+
+Expected effect:
+
+```text
+slow request budget: 50/min -> 30/min
+fast1 assignment: 500 only -> 500,800,1000
+fast1 budget: 100/min -> 120/min
+fast2 budget: 90/min
+total configured budget: 240/min
+```
+
+Live acceptance criteria:
+
+```text
+429=0
+price_update_failed=0
+Telegram polling remains healthy
+500R avg/p95 does not regress
+requests_last_60s remains stable, without sawtooth resets
+```
+
 ## Safe fast worker benchmark
 
 Date: 2026-05-27
