@@ -92,6 +92,25 @@ def test_worker_scheduler_dedicated_positions_are_scoped_to_worker_assignment() 
     assert fast_2_scheduler._dedicated_position_amounts() == set()
 
 
+def test_worker_scheduler_parses_price_change_event_age(monkeypatch) -> None:
+    monkeypatch.setattr("app.repricer.scheduler.time.time", lambda: 100.250)
+
+    event = RepricerScheduler._parse_price_change_event(
+        '{"source":"price_watcher","offer_id":"222760","new_price":"306.3","detected_at_ms":100000}'
+    )
+
+    assert event["source"] == "price_watcher"
+    assert event["offer_id"] == "222760"
+    assert event["new_price"] == "306.3"
+    assert event["event_age_ms"] == 250
+
+
+def test_worker_scheduler_accepts_legacy_price_change_event() -> None:
+    event = RepricerScheduler._parse_price_change_event("1")
+
+    assert event == {"source": "price_watcher"}
+
+
 def test_worker_scheduler_collects_due_positions_with_concurrency_limit() -> None:
     settings = Settings(_env_file=None, worker_group="fast_1", scheduler_max_concurrent_positions=2)
     scheduler = RepricerScheduler(

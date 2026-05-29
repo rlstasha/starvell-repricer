@@ -5,6 +5,7 @@ import pytest
 
 from app.core.config import Settings
 from scripts.price_watcher import (
+    PriceWatcher,
     extract_next_build_id,
     extract_offer_price,
     fetch_top_competitor_offer_ids,
@@ -91,3 +92,38 @@ async def test_price_watcher_fetches_top_competitor_offer_ids() -> None:
         await client.aclose()
 
     assert offer_ids == ("2", "3")
+
+
+@pytest.mark.asyncio
+async def test_price_watcher_publishes_json_event_payload(monkeypatch) -> None:
+    class FakeRedis:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, int, str]] = []
+
+        async def setex(self, key: str, ttl: int, value: str) -> None:
+            self.calls.append((key, ttl, value))
+
+    async def fake_fetch_price(offer_id: str) -> Decimal:
+        assert offer_id == "222760"
+        return Decimal("306.30")
+
+    monkeypatch.setattr("scripts.price_watcher.time.time", lambda: 100.123)
+    redis = FakeRedis()
+    watcher = PriceWatcher(
+        settings=Settings(_env_file=None),
+        redis=redis,
+        client=None,
+    )
+    watcher.last_prices[(500, "222760")] = Decimal("306.00")
+    monkeypatch.setattr(watcher, "_fetch_offer_price_with_build_refresh", fake_fetch_price)
+
+    await watcher._poll_offer(500, "222760")
+
+    assert redis.calls
+    key, ttl, value = redis.calls[0]
+    assert key == "repricer:price_change_event:500"
+    assert ttl == 5
+    assert '"offer_id":"222760"' in value
+    assert '"old_price":"306.00"' in value
+    assert '"new_price":"306.30"' in value
+    assert '"detected_at_ms":100123' in value

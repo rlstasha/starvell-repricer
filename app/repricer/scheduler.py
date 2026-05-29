@@ -1,5 +1,6 @@
 import asyncio
 import heapq
+import json
 import os
 import random
 import socket
@@ -7,6 +8,7 @@ import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import Any
 
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import async_sessionmaker
@@ -232,7 +234,8 @@ class RepricerScheduler:
                         await session.commit()
                         await asyncio.sleep(self.settings.dedicated_position_idle_sleep_seconds)
                         continue
-                    if await self._consume_price_change_event(amount):
+                    price_change_event = await self._consume_price_change_event(amount)
+                    if price_change_event:
                         state.next_run_monotonic = min(state.next_run_monotonic, time.monotonic())
                         self.logger.info(
                             "repricer_price_change_event_consumed",
@@ -240,6 +243,9 @@ class RepricerScheduler:
                             positions=[amount],
                             source="price_watcher",
                             dedicated_task=True,
+                            event_age_ms=price_change_event.get("event_age_ms"),
+                            offer_id=price_change_event.get("offer_id"),
+                            new_price=price_change_event.get("new_price"),
                         )
                     wait_seconds = max(state.next_run_monotonic - time.monotonic(), 0.0)
                     if wait_seconds > 0:
@@ -456,15 +462,25 @@ class RepricerScheduler:
 
     async def _apply_price_change_events(self, positions_by_amount: dict[int, Position]) -> None:
         triggered_amounts: list[int] = []
+        event_details: list[dict[str, Any]] = []
         now = time.monotonic()
         for amount in positions_by_amount:
-            if not await self._consume_price_change_event(amount):
+            price_change_event = await self._consume_price_change_event(amount)
+            if not price_change_event:
                 continue
             state = self.schedule_runtime.get(amount)
             if state is None:
                 continue
             state.next_run_monotonic = min(state.next_run_monotonic, now)
             triggered_amounts.append(amount)
+            event_details.append(
+                {
+                    "position_amount": amount,
+                    "event_age_ms": price_change_event.get("event_age_ms"),
+                    "offer_id": price_change_event.get("offer_id"),
+                    "new_price": price_change_event.get("new_price"),
+                }
+            )
 
         if not triggered_amounts:
             return
@@ -474,12 +490,19 @@ class RepricerScheduler:
             worker_group=self.settings.worker_group,
             positions=triggered_amounts,
             source="price_watcher",
+            events=event_details,
         )
 
-    async def _consume_price_change_event(self, amount: int) -> bool:
+    async def _consume_price_change_event(self, amount: int) -> dict[str, Any] | None:
         key = f"repricer:price_change_event:{amount}"
         try:
-            return bool(await self.redis.delete(key))
+            raw_payload = None
+            if hasattr(self.redis, "get"):
+                raw_payload = await self.redis.get(key)
+            deleted = await self.redis.delete(key)
+            if not deleted:
+                return None
+            return self._parse_price_change_event(raw_payload)
         except Exception as exc:
             self.logger.warning(
                 "repricer_price_change_event_check_failed",
@@ -488,7 +511,25 @@ class RepricerScheduler:
                 error=safe_starvell_error_reason(exc),
                 error_type=type(exc).__name__,
             )
-            return False
+            return None
+
+    @staticmethod
+    def _parse_price_change_event(raw_payload) -> dict[str, Any]:
+        event: dict[str, Any] = {"source": "price_watcher"}
+        if raw_payload:
+            if isinstance(raw_payload, bytes):
+                raw_payload = raw_payload.decode("utf-8", errors="replace")
+            if isinstance(raw_payload, str) and raw_payload.strip() and raw_payload != "1":
+                try:
+                    parsed = json.loads(raw_payload)
+                except ValueError:
+                    parsed = {}
+                if isinstance(parsed, dict):
+                    event.update(parsed)
+        detected_at_ms = event.get("detected_at_ms")
+        if isinstance(detected_at_ms, (int, float)):
+            event["event_age_ms"] = max(int(time.time() * 1000 - detected_at_ms), 0)
+        return event
 
     def _next_due_position(self, positions_by_amount: dict[int, Position]) -> Position | None:
         now = time.monotonic()

@@ -155,13 +155,23 @@ class PriceWatcher:
         if previous_price is None or previous_price == price:
             return
         redis_key = f"repricer:price_change_event:{position_amount}"
-        await self.redis.setex(redis_key, 5, "1")
+        detected_at_ms = int(time.time() * 1000)
+        event_payload = {
+            "source": "price_watcher",
+            "position_amount": position_amount,
+            "offer_id": offer_id,
+            "old_price": str(previous_price),
+            "new_price": str(price),
+            "detected_at_ms": detected_at_ms,
+        }
+        await self.redis.setex(redis_key, 5, json.dumps(event_payload, separators=(",", ":")))
         self.logger.info(
             "price_watcher_price_change_detected",
             position_amount=position_amount,
             offer_id=offer_id,
             old_price=str(previous_price),
             new_price=str(price),
+            detected_at_ms=detected_at_ms,
             redis_key=redis_key,
         )
 

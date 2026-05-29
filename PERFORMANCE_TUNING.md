@@ -85,6 +85,34 @@ Rollback:
 DEDICATED_POSITION_TASKS_ENABLED=false
 ```
 
+## VPS 500R price watcher event profile
+
+Date: 2026-05-30
+
+Use `deploy/vps-500r-price-watcher.env.example` only after the dedicated
+scheduler task has passed a live check. The watcher is read-only and publishes
+short-lived Redis events with `detected_at_ms`, `offer_id`, and the observed
+price change. The scheduler logs `event_age_ms` when it consumes the event.
+
+Expected effect:
+
+```text
+competitor price change detection: outside main repricer cycle
+500R wake-up path: price_watcher -> Redis event -> dedicated task
+```
+
+Risk:
+
+```text
+medium
+```
+
+Rollback:
+
+```text
+PRICE_WATCHER_ENABLED=false
+```
+
 ## Safe fast worker benchmark
 
 Date: 2026-05-27
