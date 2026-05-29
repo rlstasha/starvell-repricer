@@ -95,6 +95,12 @@ def timing_for_group(worker_group: str) -> ProfileTiming:
         return _with_min_interval_override(timing, "FAST1_MIN_INTERVAL_SECONDS")
     if worker_group == WORKER_GROUP_FAST_2:
         return _with_min_interval_override(timing, "FAST2_MIN_INTERVAL_SECONDS")
+    if worker_group == WORKER_GROUP_SLOW:
+        return _with_interval_overrides(
+            timing,
+            min_env_name="SLOW_MIN_INTERVAL_SECONDS",
+            max_env_name="SLOW_MAX_INTERVAL_SECONDS",
+        )
     return timing
 
 
@@ -230,16 +236,37 @@ def _clamp(value: float, min_value: float, max_value: float) -> float:
 
 
 def _with_min_interval_override(timing: ProfileTiming, env_name: str) -> ProfileTiming:
-    min_seconds = _interval_override_value(env_name)
-    if min_seconds is None:
+    return _with_interval_overrides(timing, min_env_name=env_name)
+
+
+def _with_interval_overrides(
+    timing: ProfileTiming,
+    *,
+    min_env_name: str | None = None,
+    max_env_name: str | None = None,
+) -> ProfileTiming:
+    min_seconds = (
+        _interval_override_value(min_env_name)
+        if min_env_name is not None
+        else None
+    )
+    max_seconds = (
+        _interval_override_value(max_env_name)
+        if max_env_name is not None
+        else None
+    )
+    if min_seconds is None and max_seconds is None:
         return timing
-    min_seconds = max(min_seconds, 0.01)
+
+    normalized_min = max(min_seconds if min_seconds is not None else timing.min_seconds, 0.01)
+    normalized_max = max(max_seconds if max_seconds is not None else timing.max_seconds, normalized_min)
+    normal_max = normalized_max if max_seconds is not None else max(timing.normal_max_seconds, normalized_min)
     return ProfileTiming(
         base_seconds=timing.base_seconds,
-        min_seconds=min_seconds,
-        max_seconds=max(timing.max_seconds, min_seconds),
-        normal_min_seconds=min_seconds,
-        normal_max_seconds=max(timing.normal_max_seconds, min_seconds),
+        min_seconds=normalized_min,
+        max_seconds=normalized_max,
+        normal_min_seconds=normalized_min,
+        normal_max_seconds=normal_max,
         backoff_min_seconds=timing.backoff_min_seconds,
         backoff_max_seconds=timing.backoff_max_seconds,
     )
@@ -266,12 +293,15 @@ def _read_interval_override_value(env_name: str) -> float | None:
         "ULTRA_FAST_MIN_INTERVAL_SECONDS": "ultra_fast_min_interval_seconds",
         "FAST1_MIN_INTERVAL_SECONDS": "fast1_min_interval_seconds",
         "FAST2_MIN_INTERVAL_SECONDS": "fast2_min_interval_seconds",
+        "SLOW_MIN_INTERVAL_SECONDS": "slow_min_interval_seconds",
+        "SLOW_MAX_INTERVAL_SECONDS": "slow_max_interval_seconds",
     }.get(env_name)
     if settings_field is None:
         return None
     try:
         from app.core.config import get_settings
 
-        return float(getattr(get_settings(), settings_field))
+        value = getattr(get_settings(), settings_field)
+        return None if value is None else float(value)
     except Exception:
         return None

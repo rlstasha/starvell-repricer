@@ -1213,6 +1213,57 @@ async def test_starvell_client_applies_proxy_backoff_on_transport_error() -> Non
 
 
 @pytest.mark.asyncio
+async def test_starvell_client_remote_protocol_error_retries_without_account_backoff(monkeypatch) -> None:
+    class RecordingLimiter:
+        def __init__(self) -> None:
+            self.backoffs: list[str | None] = []
+
+        async def acquire(self) -> None:
+            return None
+
+        def apply_backoff(self, error_kind: str | None = None) -> float:
+            self.backoffs.append(error_kind)
+            return 1.0
+
+    sleeps: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    monkeypatch.setattr("app.market.client.asyncio.sleep", fake_sleep)
+    calls = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise httpx.RemoteProtocolError("Server disconnected without sending a response.")
+        return httpx.Response(200, request=request, text="ok")
+
+    client = httpx.AsyncClient(
+        base_url="https://starvell.example",
+        transport=httpx.MockTransport(handler),
+    )
+    settings = Settings(_env_file=None, market_base_url="https://starvell.example")
+    limiter = RecordingLimiter()
+
+    async with StarvellClient(
+        settings,
+        limiter,
+        client,
+        proxy_profile="fast_1",
+        proxy_url="socks5://login:password@1.2.3.4:1080",
+    ) as starvell:
+        body, status_code, _ = await starvell.fetch_text("/api/test", request_type="test")
+
+    assert body == "ok"
+    assert status_code == 200
+    assert calls == 2
+    assert sleeps == [0.1]
+    assert limiter.backoffs == []
+
+
+@pytest.mark.asyncio
 async def test_starvell_client_rate_limit_diagnostics_include_short_windows() -> None:
     class DiagnosticLimiter:
         async def acquire(self) -> None:

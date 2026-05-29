@@ -190,6 +190,7 @@ class RepricerScheduler:
 
             await self._sync_schedule(positions, session)
             positions_by_amount = {position.robux_amount: position for position in positions}
+            await self._apply_price_change_events(positions_by_amount)
             due_positions = self._due_positions(
                 positions_by_amount,
                 limit=self.settings.scheduler_max_concurrent_positions,
@@ -309,6 +310,40 @@ class RepricerScheduler:
             for amount, state in self.schedule_runtime.items()
         ]
         heapq.heapify(self.schedule_heap)
+
+    async def _apply_price_change_events(self, positions_by_amount: dict[int, Position]) -> None:
+        triggered_amounts: list[int] = []
+        now = time.monotonic()
+        for amount in positions_by_amount:
+            key = f"repricer:price_change_event:{amount}"
+            try:
+                deleted = await self.redis.delete(key)
+            except Exception as exc:
+                self.logger.warning(
+                    "repricer_price_change_event_check_failed",
+                    worker_group=self.settings.worker_group,
+                    position_amount=amount,
+                    error=safe_starvell_error_reason(exc),
+                    error_type=type(exc).__name__,
+                )
+                continue
+            if not deleted:
+                continue
+            state = self.schedule_runtime.get(amount)
+            if state is None:
+                continue
+            state.next_run_monotonic = min(state.next_run_monotonic, now)
+            triggered_amounts.append(amount)
+
+        if not triggered_amounts:
+            return
+        self._rebuild_schedule_heap()
+        self.logger.info(
+            "repricer_price_change_event_consumed",
+            worker_group=self.settings.worker_group,
+            positions=triggered_amounts,
+            source="price_watcher",
+        )
 
     def _next_due_position(self, positions_by_amount: dict[int, Position]) -> Position | None:
         now = time.monotonic()

@@ -9,11 +9,21 @@ def clean_runtime_env(monkeypatch):
         "PROXY_FAST_1_POSITIONS",
         "PROXY_FAST_2_POSITIONS",
         "PROXY_SLOW_POSITIONS",
+        "PROXY_FAST_1_REQUEST_LIMIT_PER_MINUTE",
+        "PROXY_FAST_2_REQUEST_LIMIT_PER_MINUTE",
+        "PROXY_SLOW_REQUEST_LIMIT_PER_MINUTE",
         "WORKER_FAST_1_POSITIONS",
         "WORKER_FAST_2_POSITIONS",
         "WORKER_SLOW_POSITIONS",
+        "WORKER_FAST_1_REQUEST_LIMIT_PER_MINUTE",
+        "WORKER_FAST_2_REQUEST_LIMIT_PER_MINUTE",
+        "WORKER_SLOW_REQUEST_LIMIT_PER_MINUTE",
         "POST_UPDATE_INTERVAL_MULTIPLIER",
         "POST_UPDATE_INTERVAL_POSITIONS",
+        "SLOW_MIN_INTERVAL_SECONDS",
+        "SLOW_MAX_INTERVAL_SECONDS",
+        "PRICE_WATCHER_ENABLED",
+        "PRICE_WATCHER_POSITIONS",
     ):
         monkeypatch.delenv(env_name, raising=False)
     return monkeypatch
@@ -50,9 +60,9 @@ def test_worker_groups_use_two_fast_servers_and_one_slow_server(clean_runtime_en
 
     groups = {info.name: info for info in settings.worker_group_infos}
 
-    assert groups["fast_1"].positions == (500,)
-    assert groups["fast_2"].positions == (400, 800, 1000, 1200, 1700, 2000)
-    assert groups["slow"].positions == (40, 80, 200, 2100, 2500, 3600, 4500, 10000, 22500)
+    assert groups["fast_1"].positions == (500, 800, 1000)
+    assert groups["fast_2"].positions == (400, 1200, 2000)
+    assert groups["slow"].positions == (40, 80, 200, 1700, 2100, 2500, 3600, 4500, 10000, 22500)
 
 
 def test_legacy_worker_group_aliases_are_kept() -> None:
@@ -104,7 +114,7 @@ def test_proxy_positions_must_not_overlap() -> None:
         )
 
 
-def test_account_effective_limit_defaults_to_full_proxy_capacity() -> None:
+def test_account_effective_limit_defaults_to_full_proxy_capacity(clean_runtime_env) -> None:
     settings = Settings(_env_file=None)
 
     assert settings.token_limit_mode is True
@@ -115,9 +125,9 @@ def test_account_effective_limit_defaults_to_full_proxy_capacity() -> None:
     assert settings.account_limit_ramp_step_per_minute == 30
     assert settings.account_limit_ramp_idle_seconds == 60.0
     assert settings.price_update_context_cache_ttl_seconds == 300.0
-    assert settings.proxy_request_limits["fast_1"] == 100
+    assert settings.proxy_request_limits["fast_1"] == 120
     assert settings.proxy_request_limits["fast_2"] == 90
-    assert settings.proxy_request_limits["slow"] == 50
+    assert settings.proxy_request_limits["slow"] == 30
 
 
 def test_request_pacing_defaults_are_safe_without_group_overrides(clean_runtime_env) -> None:
@@ -134,6 +144,8 @@ def test_request_pacing_defaults_are_safe_without_group_overrides(clean_runtime_
     assert settings.ultra_fast_min_interval_seconds == 0.4
     assert settings.fast1_min_interval_seconds == 0.8
     assert settings.fast2_min_interval_seconds == 2.0
+    assert settings.slow_min_interval_seconds is None
+    assert settings.slow_max_interval_seconds is None
     assert settings.hot_mode_enabled is False
     assert settings.hot_mode_min_interval_seconds == 0.25
     assert settings.hot_mode_max_interval_seconds == 0.5
@@ -147,6 +159,27 @@ def test_request_pacing_defaults_are_safe_without_group_overrides(clean_runtime_
     assert settings.fast_mode_cooldown_max_interval_seconds == 2.5
     assert settings.post_update_interval_multiplier == 1.0
     assert settings.post_update_interval_position_amounts == (500,)
+    assert settings.price_watcher_enabled is False
+    assert settings.price_watcher_interval_ms == 300
+    assert settings.price_watcher_position_amounts == (500, 800, 1000)
+
+
+def test_slow_interval_knobs_are_validated() -> None:
+    settings = Settings(
+        _env_file=None,
+        slow_min_interval_seconds=9.0,
+        slow_max_interval_seconds=15.0,
+    )
+
+    assert settings.slow_min_interval_seconds == 9.0
+    assert settings.slow_max_interval_seconds == 15.0
+
+    with pytest.raises(ValueError):
+        Settings(
+            _env_file=None,
+            slow_min_interval_seconds=15.0,
+            slow_max_interval_seconds=9.0,
+        )
 
 
 def test_request_pacing_can_be_overridden_per_worker_group() -> None:

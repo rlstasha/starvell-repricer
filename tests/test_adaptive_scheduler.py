@@ -145,6 +145,19 @@ def test_fast2_interval_minimum_can_be_overridden_from_env(monkeypatch) -> None:
     assert display_interval_range("fast_2") == (1.7, 3.0)
 
 
+def test_slow_interval_range_can_be_overridden_from_env(monkeypatch) -> None:
+    monkeypatch.setenv("SLOW_MIN_INTERVAL_SECONDS", "9.0")
+    monkeypatch.setenv("SLOW_MAX_INTERVAL_SECONDS", "15.0")
+
+    timing = timing_for_position("slow", 2100)
+
+    assert timing.min_seconds == 9.0
+    assert timing.max_seconds == 15.0
+    assert timing.normal_min_seconds == 9.0
+    assert timing.normal_max_seconds == 15.0
+    assert display_interval_range("slow") == (9.0, 15.0)
+
+
 def test_ultrafast_interval_minimum_can_be_overridden_from_env(monkeypatch) -> None:
     monkeypatch.setenv("ULTRA_FAST_MIN_INTERVAL_SECONDS", "0.6")
 

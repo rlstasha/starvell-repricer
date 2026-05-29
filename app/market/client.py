@@ -240,6 +240,29 @@ class StarvellClient:
                     continue
                 raise
             except httpx.TransportError as exc:
+                if isinstance(exc, httpx.RemoteProtocolError):
+                    http2_fallback_applied = self._disable_http2_after_transport_error(exc)
+                    self.logger.warning(
+                        "proxy_transport_error",
+                        method=method,
+                        url=url,
+                        request_type=request_type,
+                        reason=safe_starvell_error_reason(exc),
+                        error_type=type(exc).__name__,
+                        proxy_profile=self.proxy_profile or "direct",
+                        proxy=mask_proxy_url(self.proxy_url),
+                        http2_enabled=self.settings.market_http2_enabled and not self._http2_disabled,
+                        http2_fallback_applied=http2_fallback_applied,
+                        account_backoff_applied=False,
+                        retry_after_seconds=0.1 if attempt < attempts else None,
+                        attempt=attempt,
+                        will_retry=attempt < attempts,
+                    )
+                    if attempt < attempts:
+                        await self._reset_owned_http_client()
+                        await asyncio.sleep(0.1)
+                        continue
+                    raise
                 self._apply_transport_backoff(exc)
                 http2_fallback_applied = self._disable_http2_after_transport_error(exc)
                 self.logger.warning(

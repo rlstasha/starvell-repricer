@@ -112,6 +112,8 @@ async def _run_single_worker(settings, session_factory, redis: Redis) -> None:
         ultra_fast_min_interval_seconds=settings.ultra_fast_min_interval_seconds,
         fast1_min_interval_seconds=settings.fast1_min_interval_seconds,
         fast2_min_interval_seconds=settings.fast2_min_interval_seconds,
+        slow_min_interval_seconds=settings.slow_min_interval_seconds,
+        slow_max_interval_seconds=settings.slow_max_interval_seconds,
         hot_mode_enabled=settings.hot_mode_enabled,
         hot_mode_min_interval_seconds=settings.hot_mode_min_interval_seconds,
         hot_mode_max_interval_seconds=settings.hot_mode_max_interval_seconds,
@@ -121,6 +123,9 @@ async def _run_single_worker(settings, session_factory, redis: Redis) -> None:
         fast_mode_max_interval_seconds=settings.fast_mode_max_interval_seconds,
         post_update_interval_multiplier=settings.post_update_interval_multiplier,
         post_update_interval_positions=list(settings.post_update_interval_position_amounts),
+        price_watcher_enabled=settings.price_watcher_enabled,
+        price_watcher_interval_ms=settings.price_watcher_interval_ms,
+        price_watcher_positions=list(settings.price_watcher_position_amounts),
     )
     scheduler = RepricerScheduler(
         settings=settings,

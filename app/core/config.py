@@ -100,12 +100,12 @@ class Settings(BaseSettings):
     account_limit_ramp_idle_seconds: float = Field(default=60.0, ge=1)
     ramp_step_per_minute: int | None = Field(default=None, ge=1)
     ramp_idle_seconds: float | None = Field(default=None, ge=1)
-    worker_fast_1_request_limit_per_minute: int = Field(default=100, ge=1)
+    worker_fast_1_request_limit_per_minute: int = Field(default=120, ge=1)
     worker_fast_2_request_limit_per_minute: int = Field(default=90, ge=1)
-    worker_slow_request_limit_per_minute: int = Field(default=50, ge=1)
-    worker_fast_1_positions: str = "500"
-    worker_fast_2_positions: str = "400,800,1000,1200,1700,2000"
-    worker_slow_positions: str = "40,80,200,2100,2500,3600,4500,10000,22500"
+    worker_slow_request_limit_per_minute: int = Field(default=30, ge=1)
+    worker_fast_1_positions: str = "500,800,1000"
+    worker_fast_2_positions: str = "400,1200,2000"
+    worker_slow_positions: str = "40,80,200,1700,2100,2500,3600,4500,10000,22500"
     worker_group: str = WORKER_GROUP_ALL
     public_ip: str | None = None
     position_lock_ttl_seconds: int = Field(default=30, ge=1)
@@ -129,6 +129,8 @@ class Settings(BaseSettings):
     ultra_fast_min_interval_seconds: float = Field(default=0.4, ge=0.01)
     fast1_min_interval_seconds: float = Field(default=0.8, ge=0.01)
     fast2_min_interval_seconds: float = Field(default=2.0, ge=0.01)
+    slow_min_interval_seconds: float | None = Field(default=None, ge=0.01)
+    slow_max_interval_seconds: float | None = Field(default=None, ge=0.01)
     hot_mode_enabled: bool = False
     hot_mode_min_interval_seconds: float = Field(default=0.25, ge=0.01)
     hot_mode_max_interval_seconds: float = Field(default=0.5, ge=0.01)
@@ -142,6 +144,11 @@ class Settings(BaseSettings):
     fast_mode_cooldown_max_interval_seconds: float = Field(default=2.5, ge=0.01)
     post_update_interval_multiplier: float = Field(default=1.0, ge=0.01, le=10.0)
     post_update_interval_positions: str = "500"
+    price_watcher_enabled: bool = False
+    price_watcher_interval_ms: int = Field(default=300, ge=50)
+    price_watcher_positions: str = "500,800,1000"
+    price_watcher_top_competitors: int = Field(default=3, ge=1)
+    price_watcher_competitor_refresh_seconds: float = Field(default=30.0, ge=1)
 
     @field_validator("owner_telegram_ids")
     @classmethod
@@ -239,6 +246,7 @@ class Settings(BaseSettings):
         "proxy_fast_2_positions",
         "proxy_slow_positions",
         "post_update_interval_positions",
+        "price_watcher_positions",
     )
     @classmethod
     def validate_worker_positions(cls, value: str) -> str:
@@ -267,6 +275,12 @@ class Settings(BaseSettings):
             raise ValueError(
                 "FAST_MODE_COOLDOWN_MIN_INTERVAL_SECONDS must be <= FAST_MODE_COOLDOWN_MAX_INTERVAL_SECONDS"
             )
+        if (
+            self.slow_min_interval_seconds is not None
+            and self.slow_max_interval_seconds is not None
+            and self.slow_min_interval_seconds > self.slow_max_interval_seconds
+        ):
+            raise ValueError("SLOW_MIN_INTERVAL_SECONDS must be <= SLOW_MAX_INTERVAL_SECONDS")
         for value_name, value in (
             ("FAST1_MIN_DELAY_MS", self.fast1_min_delay_ms),
             ("FAST2_MIN_DELAY_MS", self.fast2_min_delay_ms),
@@ -367,6 +381,10 @@ class Settings(BaseSettings):
     @property
     def post_update_interval_position_amounts(self) -> tuple[int, ...]:
         return parse_position_list(self.post_update_interval_positions, ())
+
+    @property
+    def price_watcher_position_amounts(self) -> tuple[int, ...]:
+        return parse_position_list(self.price_watcher_positions, ())
 
     @property
     def worker_group_positions(self) -> dict[str, tuple[int, ...]]:

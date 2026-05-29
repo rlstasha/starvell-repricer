@@ -10,9 +10,21 @@ from app.repricer.scheduler import RAMP_UP_IDLE_SECONDS, RepricerScheduler, Runt
 
 
 @pytest.fixture(autouse=True)
-def clean_post_update_env(monkeypatch):
+def clean_runtime_env(monkeypatch):
     monkeypatch.delenv("POST_UPDATE_INTERVAL_MULTIPLIER", raising=False)
     monkeypatch.delenv("POST_UPDATE_INTERVAL_POSITIONS", raising=False)
+    for env_name in (
+        "PROXY_FAST_1_POSITIONS",
+        "PROXY_FAST_2_POSITIONS",
+        "PROXY_SLOW_POSITIONS",
+        "WORKER_FAST_1_POSITIONS",
+        "WORKER_FAST_2_POSITIONS",
+        "WORKER_SLOW_POSITIONS",
+        "WORKER_FAST_1_REQUEST_LIMIT_PER_MINUTE",
+        "WORKER_FAST_2_REQUEST_LIMIT_PER_MINUTE",
+        "WORKER_SLOW_REQUEST_LIMIT_PER_MINUTE",
+    ):
+        monkeypatch.delenv(env_name, raising=False)
 
 
 def test_worker_scheduler_filters_fast_2_positions_only() -> None:
@@ -35,7 +47,7 @@ def test_worker_scheduler_filters_fast_2_positions_only() -> None:
 
     filtered = scheduler._filter_assigned_positions(positions)
 
-    assert [position.robux_amount for position in filtered] == [400, 800, 1000, 1200, 1700, 2000]
+    assert [position.robux_amount for position in filtered] == [400, 1200, 2000]
 
 
 def test_worker_scheduler_collects_due_positions_with_concurrency_limit() -> None:
@@ -94,6 +106,46 @@ def test_worker_scheduler_collects_due_positions_with_concurrency_limit() -> Non
     assert len(due) == 2
     assert {position.robux_amount for position in due} <= {500, 800, 1000}
     assert len(scheduler.schedule_heap) == 1
+
+
+@pytest.mark.asyncio
+async def test_worker_scheduler_price_change_event_makes_position_due() -> None:
+    class FakeRedis:
+        def __init__(self) -> None:
+            self.keys = {"repricer:price_change_event:500"}
+
+        async def delete(self, key: str) -> int:
+            if key not in self.keys:
+                return 0
+            self.keys.remove(key)
+            return 1
+
+    settings = Settings(_env_file=None, worker_group="fast_1", scheduler_max_concurrent_positions=1)
+    scheduler = RepricerScheduler(
+        settings=settings,
+        session_factory=object(),
+        redis=FakeRedis(),
+    )
+    future = time.monotonic() + 60
+    scheduler.schedule_runtime = {
+        500: RuntimeScheduleState(
+            position_amount=500,
+            lot_id="2000",
+            proxy_profile="fast_1",
+            base_interval_seconds=1.0,
+            current_interval_seconds=1.0,
+            next_run_monotonic=future,
+            last_checked_at=None,
+            last_competitor_price=None,
+            last_own_price=None,
+        )
+    }
+    scheduler._rebuild_schedule_heap()
+
+    await scheduler._apply_price_change_events({500: Position(robux_amount=500)})
+    due = scheduler._due_positions({500: Position(robux_amount=500)}, limit=1)
+
+    assert [position.robux_amount for position in due] == [500]
 
 
 def test_worker_scheduler_can_disable_proactive_rate_limits_for_benchmarks() -> None:
