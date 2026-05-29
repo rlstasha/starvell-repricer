@@ -112,6 +112,13 @@ services:
     restart: unless-stopped
     environment:
       APP_MODE: bot
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+    dns_opt:
+      - single-request-reopen
+    extra_hosts:
+      - "api.telegram.org:${TELEGRAM_API_IPV4:-149.154.167.220}"
     command: python -m app.bot_main
     depends_on:
       seed:
@@ -122,7 +129,7 @@ services:
       test:
         [
           "CMD-SHELL",
-          "python -c \"import os,time,urllib.request; p='/tmp/starvell_bot_polling_heartbeat'; assert os.path.exists(p) and time.time()-os.path.getmtime(p)<90; urllib.request.urlopen('https://api.telegram.org', timeout=10).close()\"",
+          "python -m app.check_telegram_connectivity --heartbeat-file /tmp/starvell_bot_polling_heartbeat --max-heartbeat-age 90 --timeout 10",
         ]
       interval: 30s
       timeout: 10s

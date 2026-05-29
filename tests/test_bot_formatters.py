@@ -116,7 +116,7 @@ def test_worker_servers_show_new_fast_split_and_frequency() -> None:
         worker_group="fast_1",
         hostname="vps-fast-1",
         public_ip="203.0.113.10",
-        assigned_positions=[500, 800, 1000],
+        assigned_positions=[500],
         request_limit_per_minute=100,
         last_seen_at=datetime.now(UTC),
         status="dry_run",
@@ -132,10 +132,10 @@ def test_worker_servers_show_new_fast_split_and_frequency() -> None:
 
     assert "📊 Прокси и лимиты" in text
     assert "🚀 Fast 1" in text
-    assert "500 · 800 · 1000" in text
+    assert "500" in text
     assert "Частота: 0.8–2.2 сек" in text
     assert "🚀 Fast 2" in text
-    assert "400 · 1200 · 1700 · 2000" in text
+    assert "400 · 800 · 1000 · 1200 · 1700 · 2000" in text
     assert "Частота: 2.0–3.0 сек" in text
     assert "🐢 Slow" in text
     assert "Частота: 4.5–6.5 сек" in text
@@ -175,7 +175,7 @@ def test_position_card_uses_proxy_group_frequency_and_ip() -> None:
         worker_group="fast_1",
         hostname="server",
         public_ip="45.132.20.115",
-        assigned_positions=[500, 800, 1000],
+        assigned_positions=[500],
         request_limit_per_minute=100,
         last_seen_at=datetime.now(UTC),
         status="dry_run",
@@ -357,7 +357,7 @@ def test_proxy_screen_contains_only_proxy_health() -> None:
     assert "1/3" in text
     assert "🚀 Fast 1" in text
     assert "IP:\n45.132.20.115" in text
-    assert "500 · 800 · 1000" in text
+    assert "500" in text
     assert "Лимит:\n280/мин" in text
     assert "Нагрузка:\n0/280" in text
     assert "Статус:\n✅ активен" in text
@@ -370,7 +370,7 @@ def test_proxy_screen_is_paginated_one_profile_per_page() -> None:
         worker_group="fast_2",
         hostname="server",
         public_ip="45.132.20.205",
-        assigned_positions=[400, 1200, 1700, 2000],
+        assigned_positions=[400, 800, 1000, 1200, 1700, 2000],
         request_limit_per_minute=280,
         profile_request_usage_per_minute=89,
         current_delay_seconds=2.6,
@@ -389,7 +389,7 @@ def test_proxy_screen_is_paginated_one_profile_per_page() -> None:
     assert "2/3" in text
     assert "🚀 Fast 2" in text
     assert "45.132.20.205" in text
-    assert "400 · 1200 · 1700 · 2000" in text
+    assert "400 · 800 · 1000 · 1200 · 1700 · 2000" in text
     assert "Нагрузка:\n89/280" in text
     assert "Текущий интервал:\n2.6 сек" in text
     assert "Fast 1" not in text

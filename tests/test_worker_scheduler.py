@@ -9,6 +9,12 @@ from app.repricer.rate_limiter import NoopRateLimiter
 from app.repricer.scheduler import RAMP_UP_IDLE_SECONDS, RepricerScheduler, RuntimeScheduleState
 
 
+@pytest.fixture(autouse=True)
+def clean_post_update_env(monkeypatch):
+    monkeypatch.delenv("POST_UPDATE_INTERVAL_MULTIPLIER", raising=False)
+    monkeypatch.delenv("POST_UPDATE_INTERVAL_POSITIONS", raising=False)
+
+
 def test_worker_scheduler_filters_fast_2_positions_only() -> None:
     settings = Settings(_env_file=None, worker_group="fast_2")
     scheduler = RepricerScheduler(
@@ -19,6 +25,8 @@ def test_worker_scheduler_filters_fast_2_positions_only() -> None:
     positions = [
         Position(robux_amount=400),
         Position(robux_amount=500),
+        Position(robux_amount=800),
+        Position(robux_amount=1000),
         Position(robux_amount=1200),
         Position(robux_amount=1700),
         Position(robux_amount=2000),
@@ -27,7 +35,7 @@ def test_worker_scheduler_filters_fast_2_positions_only() -> None:
 
     filtered = scheduler._filter_assigned_positions(positions)
 
-    assert [position.robux_amount for position in filtered] == [400, 1200, 1700, 2000]
+    assert [position.robux_amount for position in filtered] == [400, 800, 1000, 1200, 1700, 2000]
 
 
 def test_worker_scheduler_collects_due_positions_with_concurrency_limit() -> None:

@@ -115,6 +115,49 @@ docker compose logs --since=10m worker | grep -E "price_updated|price_update_fai
 docker compose logs --since=10m bot | grep -E "telegram_polling|TelegramNetworkError|callback"
 ```
 
+## Telegram API IPv4 check
+
+Some VPS/Docker DNS setups return only an IPv6 record for `api.telegram.org`, while the
+Docker bridge has IPv6 disabled. In that case the bot logs `Network is unreachable`.
+
+The compose file pins `api.telegram.org` to an IPv4 fallback for the `bot` service and
+the bot process also forces aiogram/aiohttp to use IPv4 sockets.
+
+Check inside the bot container:
+
+```bash
+docker compose exec bot getent hosts api.telegram.org
+docker compose exec bot getent ahostsv4 api.telegram.org
+docker compose exec bot python -m app.check_telegram_connectivity --heartbeat-file /tmp/starvell_bot_polling_heartbeat --max-heartbeat-age 90 --timeout 10
+```
+
+Expected:
+
+```text
+149.154.167.220 api.telegram.org
+telegram_ipv4_ok ip=149.154.167.220 status=HTTP/1.1 302 Moved Temporarily
+```
+
+If the pinned Telegram IPv4 ever stops working, find a working IPv4 on the host:
+
+```bash
+getent ahostsv4 api.telegram.org
+curl -4 -I https://api.telegram.org
+```
+
+Then set it in `.env`:
+
+```env
+TELEGRAM_FORCE_IPV4=true
+TELEGRAM_API_IPV4=<working_ipv4>
+```
+
+Restart the bot:
+
+```bash
+docker compose up -d --build bot
+```
+
 ## Safe update
 
 ```bash
@@ -173,4 +216,3 @@ stale Redis/account limiter state
 ```
 
 One active production stack at a time is the safe rule.
-

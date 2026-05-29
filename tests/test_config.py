@@ -3,6 +3,22 @@ import pytest
 from app.core.config import Settings
 
 
+@pytest.fixture
+def clean_runtime_env(monkeypatch):
+    for env_name in (
+        "PROXY_FAST_1_POSITIONS",
+        "PROXY_FAST_2_POSITIONS",
+        "PROXY_SLOW_POSITIONS",
+        "WORKER_FAST_1_POSITIONS",
+        "WORKER_FAST_2_POSITIONS",
+        "WORKER_SLOW_POSITIONS",
+        "POST_UPDATE_INTERVAL_MULTIPLIER",
+        "POST_UPDATE_INTERVAL_POSITIONS",
+    ):
+        monkeypatch.delenv(env_name, raising=False)
+    return monkeypatch
+
+
 def test_owner_telegram_ids_are_parsed_from_comma_list() -> None:
     settings = Settings(
         _env_file=None,
@@ -29,16 +45,7 @@ def test_priority_percentages_must_sum_to_100() -> None:
         Settings(_env_file=None, high_priority_percent=70, normal_priority_percent=20)
 
 
-def test_worker_groups_use_two_fast_servers_and_one_slow_server(monkeypatch) -> None:
-    for env_name in (
-        "PROXY_FAST_1_POSITIONS",
-        "PROXY_FAST_2_POSITIONS",
-        "PROXY_SLOW_POSITIONS",
-        "WORKER_FAST_1_POSITIONS",
-        "WORKER_FAST_2_POSITIONS",
-        "WORKER_SLOW_POSITIONS",
-    ):
-        monkeypatch.delenv(env_name, raising=False)
+def test_worker_groups_use_two_fast_servers_and_one_slow_server(clean_runtime_env) -> None:
     settings = Settings(_env_file=None)
 
     groups = {info.name: info for info in settings.worker_group_infos}
@@ -56,14 +63,14 @@ def test_legacy_worker_group_aliases_are_kept() -> None:
     assert medium.worker_group == "fast_2"
 
 
-def test_worker_positions_can_be_overridden_from_env_values() -> None:
+def test_worker_positions_can_be_overridden_from_env_values(clean_runtime_env) -> None:
     settings = Settings(
         _env_file=None,
-        proxy_fast_1_positions="500, 800, 1000",
+        proxy_fast_1_positions="500, 700, 900",
         worker_group="fast_1",
     )
 
-    assert settings.assigned_positions == (500, 800, 1000)
+    assert settings.assigned_positions == (500, 700, 900)
 
 
 def test_proxy_url_for_group_is_disabled_when_proxy_mode_is_disabled() -> None:
@@ -113,7 +120,7 @@ def test_account_effective_limit_defaults_to_full_proxy_capacity() -> None:
     assert settings.proxy_request_limits["slow"] == 50
 
 
-def test_request_pacing_defaults_are_safe_without_group_overrides() -> None:
+def test_request_pacing_defaults_are_safe_without_group_overrides(clean_runtime_env) -> None:
     settings = Settings(_env_file=None)
 
     assert settings.request_min_delay_ms == 300

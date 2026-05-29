@@ -14,6 +14,7 @@ from app.bot.handlers.positions import router as positions_router
 from app.bot.handlers.settings import router as settings_router
 from app.bot.handlers.start import router as start_router
 from app.bot.middlewares import CallbackSafetyMiddleware, OwnerOnlyMiddleware
+from app.bot.telegram_network import build_telegram_session
 from app.core.config import get_settings
 from app.core.logging import configure_logging, get_logger
 from app.db.repositories import AppSettingsRepository, PositionRepository
@@ -49,7 +50,8 @@ async def main() -> None:
             await AppSettingsRepository(session).ensure_defaults(dry_run=settings.dry_run)
             await session.commit()
 
-    bot = Bot(settings.telegram_bot_token)
+    telegram_session = build_telegram_session(settings)
+    bot = Bot(settings.telegram_bot_token, session=telegram_session)
     dispatcher = Dispatcher(storage=MemoryStorage())
     dispatcher["session_factory"] = session_factory
     dispatcher["settings"] = settings
@@ -93,6 +95,8 @@ async def main() -> None:
         proxy_fast_1_request_limit_per_minute=settings.proxy_request_limits["fast_1"],
         proxy_fast_2_request_limit_per_minute=settings.proxy_request_limits["fast_2"],
         proxy_slow_request_limit_per_minute=settings.proxy_request_limits["slow"],
+        telegram_force_ipv4=settings.telegram_force_ipv4,
+        telegram_api_ipv4_configured=bool(settings.telegram_api_ipv4),
     )
     try:
         await _run_polling_forever(dispatcher, bot)

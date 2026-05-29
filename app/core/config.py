@@ -34,6 +34,8 @@ class Settings(BaseSettings):
     telegram_bot_token: str = ""
     owner_telegram_ids: str = ""
     owner_telegram_id: int | None = None
+    telegram_force_ipv4: bool = True
+    telegram_api_ipv4: str = ""
 
     market_base_url: str = "https://starvell.com"
     market_api_token: str = ""
