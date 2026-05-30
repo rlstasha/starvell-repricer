@@ -4,6 +4,7 @@ import httpx
 import pytest
 
 from app.core.config import Settings
+from app.market.schemas import MarketOffer
 from scripts.price_watcher import (
     PriceWatcher,
     extract_next_build_id,
@@ -115,6 +116,15 @@ async def test_price_watcher_publishes_json_event_payload(monkeypatch) -> None:
         client=None,
     )
     watcher.last_prices[(500, "222760")] = Decimal("306.00")
+    watcher.competitor_offers[(500, "222760")] = MarketOffer(
+        position_amount=500,
+        price=Decimal("306.00"),
+        seller_id="seller-2",
+        seller_username="seller2",
+        rating=Decimal("4.9"),
+        is_active=True,
+        raw_payload={"id": "222760"},
+    )
     monkeypatch.setattr(watcher, "_fetch_offer_price_with_build_refresh", fake_fetch_price)
 
     await watcher._poll_offer(500, "222760")
@@ -127,3 +137,6 @@ async def test_price_watcher_publishes_json_event_payload(monkeypatch) -> None:
     assert '"old_price":"306.00"' in value
     assert '"new_price":"306.30"' in value
     assert '"detected_at_ms":100123' in value
+    assert '"seller_id":"seller-2"' in value
+    assert '"rating":"4.9"' in value
+    assert '"is_active":true' in value

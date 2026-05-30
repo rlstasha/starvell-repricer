@@ -147,6 +147,8 @@ class Settings(BaseSettings):
     fast_mode_cooldown_max_interval_seconds: float = Field(default=2.5, ge=0.01)
     post_update_interval_multiplier: float = Field(default=1.0, ge=0.01, le=10.0)
     post_update_interval_positions: str = "500"
+    watcher_event_fast_path_enabled: bool = False
+    watcher_event_own_lot_cache_max_age_seconds: float = Field(default=30.0, ge=0, le=300)
     price_watcher_enabled: bool = False
     price_watcher_interval_ms: int = Field(default=300, ge=50)
     price_watcher_positions: str = "500,800,1000"

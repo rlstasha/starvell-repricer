@@ -645,6 +645,11 @@ class StarvellClient:
         )
         return own_lot
 
+    def cached_own_lot(self, lot_id: str | None) -> OwnLot | None:
+        if not lot_id:
+            return None
+        return self._cached_own_lot(str(lot_id))
+
     def own_lot_cache_status(self, lot_id: str | None) -> dict[str, float | str | bool | None]:
         if not lot_id:
             return {

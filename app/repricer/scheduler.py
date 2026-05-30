@@ -103,6 +103,7 @@ class RepricerScheduler:
         )
         self.schedule_runtime: dict[int, RuntimeScheduleState] = {}
         self.schedule_heap: list[tuple[float, float, int]] = []
+        self.pending_price_change_events: dict[int, dict[str, Any]] = {}
         self.current_delay_seconds: float | None = None
         min_interval, max_interval = display_interval_range(settings.worker_group)
         self.interval_min_seconds = min_interval
@@ -236,6 +237,7 @@ class RepricerScheduler:
                         continue
                     price_change_event = await self._consume_price_change_event(amount)
                     if price_change_event:
+                        self.pending_price_change_events[amount] = price_change_event
                         state.next_run_monotonic = min(state.next_run_monotonic, time.monotonic())
                         self.logger.info(
                             "repricer_price_change_event_consumed",
@@ -472,6 +474,7 @@ class RepricerScheduler:
             if state is None:
                 continue
             state.next_run_monotonic = min(state.next_run_monotonic, now)
+            self.pending_price_change_events[amount] = price_change_event
             triggered_amounts.append(amount)
             event_details.append(
                 {
@@ -591,7 +594,18 @@ class RepricerScheduler:
                 dry_run=dry_run,
             )
             try:
-                result = await engine.process_position(position.robux_amount)
+                price_change_event = self.pending_price_change_events.pop(
+                    position.robux_amount,
+                    None,
+                )
+                result = None
+                if price_change_event:
+                    result = await engine.process_watcher_price_event(
+                        position.robux_amount,
+                        price_change_event,
+                    )
+                if result is None:
+                    result = await engine.process_position(position.robux_amount)
             finally:
                 await self.position_lock.release(position.robux_amount)
 

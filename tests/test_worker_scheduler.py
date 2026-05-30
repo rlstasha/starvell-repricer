@@ -207,6 +207,7 @@ async def test_worker_scheduler_price_change_event_makes_position_due() -> None:
     due = scheduler._due_positions({500: Position(robux_amount=500)}, limit=1)
 
     assert [position.robux_amount for position in due] == [500]
+    assert scheduler.pending_price_change_events[500]["source"] == "price_watcher"
 
 
 def test_worker_scheduler_can_disable_proactive_rate_limits_for_benchmarks() -> None:

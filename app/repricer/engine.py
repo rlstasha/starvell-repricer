@@ -3,6 +3,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from decimal import Decimal
 from time import perf_counter
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -89,6 +90,43 @@ class RepricerEngine:
                 self.logger.warning("repricer_position_failed", **log_context)
             else:
                 self.logger.exception("repricer_position_failed", **log_context)
+            return ProcessResult(position_amount, "failed", reason, None, None, None)
+
+    async def process_watcher_price_event(
+        self,
+        position_amount: int,
+        event: dict[str, Any],
+    ) -> ProcessResult | None:
+        if not self.settings.watcher_event_fast_path_enabled:
+            return None
+        position = await self.positions.get_by_amount(position_amount)
+        if position is None or not position.enabled:
+            return None
+        try:
+            result = await self._process_watcher_price_event_loaded_position(position, event)
+            if result is None:
+                return None
+            db_commit_started_at = perf_counter()
+            await self.session.commit()
+            db_commit_ms = _elapsed_ms(db_commit_started_at)
+            if result.phase_metrics:
+                self._log_cycle_phase_profile(
+                    position=position,
+                    result=result,
+                    db_commit_ms=db_commit_ms,
+                )
+            return result
+        except Exception as exc:
+            await self.session.rollback()
+            reason = safe_starvell_error_reason(exc)
+            await self._persist_failure(position_amount, exc, reason)
+            self.logger.exception(
+                "event_fast_path_failed",
+                proxy_profile=self.settings.worker_group,
+                position_amount=position_amount,
+                error=reason,
+                error_type=type(exc).__name__,
+            )
             return ProcessResult(position_amount, "failed", reason, None, None, None)
 
     async def _process_loaded_position(self, position: Position) -> ProcessResult:
@@ -396,6 +434,203 @@ class RepricerEngine:
             phase_metrics,
         )
 
+    async def _process_watcher_price_event_loaded_position(
+        self,
+        position: Position,
+        event: dict[str, Any],
+    ) -> ProcessResult | None:
+        event_started_at = perf_counter()
+        event_age_ms = _event_age_ms(event)
+        self.logger.info(
+            "event_fast_path_attempt",
+            proxy_profile=self.settings.worker_group,
+            position_amount=position.robux_amount,
+            lot_id=position.lot_id,
+            offer_id=event.get("offer_id"),
+            event_age_ms=event_age_ms,
+        )
+        fallback = self._event_fast_path_fallback
+        if not position.lot_id:
+            fallback(position=position, event=event, reason="missing_lot_id", event_age_ms=event_age_ms)
+            return None
+
+        event_price = _decimal_or_none(event.get("new_price"))
+        if event_price is None:
+            fallback(position=position, event=event, reason="missing_event_price", event_age_ms=event_age_ms)
+            return None
+
+        own_lot_cache_status = self.starvell_client.own_lot_cache_status(position.lot_id)
+        cache_age = own_lot_cache_status["cache_age_seconds"]
+        if not own_lot_cache_status["fresh"]:
+            fallback(
+                position=position,
+                event=event,
+                reason=str(own_lot_cache_status["reason"]),
+                event_age_ms=event_age_ms,
+                cache_age_seconds=cache_age,
+            )
+            return None
+        if (
+            cache_age is not None
+            and float(cache_age) > self.settings.watcher_event_own_lot_cache_max_age_seconds
+        ):
+            fallback(
+                position=position,
+                event=event,
+                reason="own_lot_cache_too_old",
+                event_age_ms=event_age_ms,
+                cache_age_seconds=cache_age,
+            )
+            return None
+
+        own_lot = self.starvell_client.cached_own_lot(position.lot_id)
+        current_price = self._current_price(position, own_lot)
+        if current_price is None:
+            fallback(position=position, event=event, reason="missing_current_price", event_age_ms=event_age_ms)
+            return None
+
+        event_offer = _market_offer_from_event(position.robux_amount, event, event_price)
+        filter_settings = CompetitorFilterSettings(
+            min_rating=position.settings.min_rating,
+            ignore_no_rating=position.settings.ignore_no_rating,
+            own_seller_id=self.settings.own_seller_id,
+            own_seller_username=self.settings.own_seller_username,
+        )
+        filter_result = self.competitor_filter.filter([event_offer], filter_settings)
+        if not filter_result.accepted:
+            fallback(
+                position=position,
+                event=event,
+                reason="event_competitor_filtered",
+                event_age_ms=event_age_ms,
+                ignored_reasons=filter_result.ignored_reasons,
+            )
+            return None
+
+        decision = self.strategy.calculate(
+            competitors=filter_result.accepted,
+            current_own_price=current_price,
+            settings=PriceCalculationSettings(
+                min_price=position.settings.min_price,
+                max_price=position.settings.max_price,
+                step=position.settings.step,
+                fallback_behavior=position.settings.fallback_behavior,
+            ),
+        )
+        if decision.reason in {
+            "all_competitors_below_min_price",
+            "min_price_bounce_to_upper_competitor",
+        }:
+            fallback(
+                position=position,
+                event=event,
+                reason=f"strategy_requires_full_market:{decision.reason}",
+                event_age_ms=event_age_ms,
+            )
+            return None
+        if decision.target_price is None:
+            fallback(
+                position=position,
+                event=event,
+                reason=f"strategy_no_target:{decision.reason}",
+                event_age_ms=event_age_ms,
+            )
+            return None
+
+        price_write_ms = 0.0
+        status = UpdateStatus.SKIPPED.value
+        reason = decision.reason
+        if decision.should_update:
+            if self.dry_run:
+                status = UpdateStatus.DRY_RUN.value
+                reason = f"dry_run_would_update:{decision.reason}"
+            else:
+                price_write_started_at = perf_counter()
+                await self.starvell_client.update_my_lot_price(
+                    position.robux_amount,
+                    position.lot_id,
+                    decision.target_price,
+                    allow_real_write=not self.dry_run,
+                )
+                price_write_ms = _elapsed_ms(price_write_started_at)
+                status = UpdateStatus.SUCCESS.value
+                self.logger.info(
+                    "event_fast_path_price_updated",
+                    proxy_profile=self.settings.worker_group,
+                    position_amount=position.robux_amount,
+                    lot_id=position.lot_id,
+                    offer_id=event.get("offer_id"),
+                    old_price=str(current_price),
+                    new_price=str(decision.target_price),
+                    competitor_price=str(decision.competitor_price),
+                    event_age_ms=event_age_ms,
+                    price_write_ms=price_write_ms,
+                    total_event_to_write_ms=_total_event_to_now_ms(event),
+                )
+
+        await self._record_decision(
+            position=position,
+            decision=decision,
+            old_price=current_price,
+            new_price=decision.target_price,
+            status=status,
+            reason=reason,
+        )
+        if status != UpdateStatus.SUCCESS.value:
+            self.logger.info(
+                "event_fast_path_no_update",
+                proxy_profile=self.settings.worker_group,
+                position_amount=position.robux_amount,
+                lot_id=position.lot_id,
+                offer_id=event.get("offer_id"),
+                status=status,
+                reason=reason,
+                current_price=str(current_price),
+                target_price=str(decision.target_price),
+                competitor_price=str(decision.competitor_price),
+                event_age_ms=event_age_ms,
+            )
+        phase_metrics = self._phase_metrics(
+            market_request_ms=0.0,
+            my_lot_request_ms=0.0,
+            price_write_ms=price_write_ms,
+            cycle_started_at=event_started_at,
+            parallel_fetch_enabled=True,
+            parallel_fetch_disabled_reason=None,
+        )
+        phase_metrics["event_fast_path"] = True
+        phase_metrics["event_age_ms"] = event_age_ms
+        phase_metrics["total_event_to_write_ms"] = _total_event_to_now_ms(event)
+        return ProcessResult(
+            position.robux_amount,
+            status,
+            reason,
+            current_price,
+            decision.target_price,
+            decision.competitor_price,
+            phase_metrics,
+        )
+
+    def _event_fast_path_fallback(
+        self,
+        *,
+        position: Position,
+        event: dict[str, Any],
+        reason: str,
+        event_age_ms: int | None,
+        **extra,
+    ) -> None:
+        self.logger.info(
+            "event_fast_path_fallback",
+            proxy_profile=self.settings.worker_group,
+            position_amount=position.robux_amount,
+            lot_id=position.lot_id,
+            offer_id=event.get("offer_id"),
+            reason=reason,
+            event_age_ms=event_age_ms,
+            **extra,
+        )
+
     async def _timed_market_fetch(self, position_amount: int, lot_id: str):
         started_at = perf_counter()
         result = await self.starvell_client.get_market_offers_result(position_amount, lot_id)
@@ -624,3 +859,67 @@ def _dominant_phase(
         return None, None
     phase, value = max(normalized.items(), key=lambda item: item[1])
     return phase, round(value, 2)
+
+
+def _decimal_or_none(value) -> Decimal | None:
+    if value is None:
+        return None
+    try:
+        return Decimal(str(value).replace(",", "."))
+    except Exception:
+        return None
+
+
+def _bool_or_none(value) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes"}:
+            return True
+        if normalized in {"false", "0", "no"}:
+            return False
+    return None
+
+
+def _event_age_ms(event: dict[str, Any]) -> int | None:
+    detected_at_ms = event.get("detected_at_ms")
+    if isinstance(detected_at_ms, (int, float)):
+        return max(int(_epoch_ms() - detected_at_ms), 0)
+    event_age = event.get("event_age_ms")
+    if isinstance(event_age, (int, float)):
+        return max(int(event_age), 0)
+    return None
+
+
+def _total_event_to_now_ms(event: dict[str, Any]) -> int | None:
+    return _event_age_ms(event)
+
+
+def _epoch_ms() -> int:
+    import time
+
+    return int(time.time() * 1000)
+
+
+def _market_offer_from_event(
+    position_amount: int,
+    event: dict[str, Any],
+    price: Decimal,
+) -> MarketOffer:
+    return MarketOffer(
+        position_amount=position_amount,
+        price=price,
+        seller_id=str(event["seller_id"]) if event.get("seller_id") is not None else None,
+        seller_username=(
+            str(event["seller_username"]) if event.get("seller_username") is not None else None
+        ),
+        rating=_decimal_or_none(event.get("rating")),
+        is_active=_bool_or_none(event.get("is_active")),
+        raw_payload={
+            "id": event.get("offer_id"),
+            "source": event.get("source"),
+            "price": str(price),
+            "event": event,
+        },
+    )

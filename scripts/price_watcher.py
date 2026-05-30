@@ -74,6 +74,7 @@ class PriceWatcher:
         self.client = client
         self.build_id: str | None = None
         self.competitor_ids: dict[int, tuple[str, ...]] = {}
+        self.competitor_offers: dict[tuple[int, str], Any] = {}
         self.last_prices: dict[tuple[int, str], Decimal] = {}
         self.last_competitor_refresh_monotonic = 0.0
         self.logger = LOGGER
@@ -117,16 +118,26 @@ class PriceWatcher:
         ):
             return
         refreshed: dict[int, tuple[str, ...]] = {}
+        refreshed_offers: dict[tuple[int, str], Any] = {}
         for position_amount in self.settings.price_watcher_position_amounts:
-            offer_ids = await fetch_top_competitor_offer_ids(
+            offers = await fetch_top_competitor_offers(
                 self.client,
                 settings=self.settings,
                 position_amount=position_amount,
                 limit=self.settings.price_watcher_top_competitors,
             )
+            offer_ids = tuple(
+                offer_id
+                for offer in offers
+                if (offer_id := _find_offer_id(offer.raw_payload))
+            )
             if offer_ids:
                 refreshed[position_amount] = offer_ids
+                for offer in offers:
+                    if offer_id := _find_offer_id(offer.raw_payload):
+                        refreshed_offers[(position_amount, offer_id)] = offer
         self.competitor_ids = refreshed
+        self.competitor_offers = refreshed_offers
         self.last_competitor_refresh_monotonic = now
         self.logger.info(
             "price_watcher_competitors_refreshed",
@@ -164,6 +175,8 @@ class PriceWatcher:
             "new_price": str(price),
             "detected_at_ms": detected_at_ms,
         }
+        if offer_metadata := self._event_offer_metadata(position_amount, offer_id):
+            event_payload.update(offer_metadata)
         await self.redis.setex(redis_key, 5, json.dumps(event_payload, separators=(",", ":")))
         self.logger.info(
             "price_watcher_price_change_detected",
@@ -174,6 +187,21 @@ class PriceWatcher:
             detected_at_ms=detected_at_ms,
             redis_key=redis_key,
         )
+
+    def _event_offer_metadata(self, position_amount: int, offer_id: str) -> dict[str, Any]:
+        offer = self.competitor_offers.get((position_amount, offer_id))
+        if offer is None:
+            return {}
+        payload: dict[str, Any] = {}
+        if offer.seller_id is not None:
+            payload["seller_id"] = offer.seller_id
+        if offer.seller_username is not None:
+            payload["seller_username"] = offer.seller_username
+        if offer.rating is not None:
+            payload["rating"] = str(offer.rating)
+        if offer.is_active is not None:
+            payload["is_active"] = offer.is_active
+        return payload
 
     async def _fetch_offer_price_with_build_refresh(self, offer_id: str) -> Decimal | None:
         build_id = await self._ensure_build_id()
@@ -222,6 +250,26 @@ async def fetch_top_competitor_offer_ids(
     position_amount: int,
     limit: int,
 ) -> tuple[str, ...]:
+    offers = await fetch_top_competitor_offers(
+        client,
+        settings=settings,
+        position_amount=position_amount,
+        limit=limit,
+    )
+    return tuple(
+        offer_id
+        for offer in offers
+        if (offer_id := _find_offer_id(offer.raw_payload))
+    )
+
+
+async def fetch_top_competitor_offers(
+    client: httpx.AsyncClient,
+    *,
+    settings: Settings,
+    position_amount: int,
+    limit: int,
+):
     if position_amount not in STARVELL_ROBUX_SUBCATEGORY_IDS:
         return ()
     payload = _market_offers_api_payload(
@@ -232,17 +280,17 @@ async def fetch_top_competitor_offer_ids(
     response.raise_for_status()
     raw_items = _extract_offer_payload_items(response.json())
     offers = parse_starvell_market_offers_payload(raw_items, position_amount=position_amount)
-    offer_ids: list[str] = []
+    selected = []
     for offer in offers:
         if _is_own_offer(settings, offer.seller_id, offer.seller_username):
             continue
         offer_id = _find_offer_id(offer.raw_payload)
-        if not offer_id or offer_id in offer_ids:
+        if not offer_id or any(_find_offer_id(existing.raw_payload) == offer_id for existing in selected):
             continue
-        offer_ids.append(offer_id)
-        if len(offer_ids) >= limit:
+        selected.append(offer)
+        if len(selected) >= limit:
             break
-    return tuple(offer_ids)
+    return tuple(selected)
 
 
 async def fetch_offer_next_json(

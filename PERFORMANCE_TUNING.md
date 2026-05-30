@@ -93,6 +93,9 @@ Use `deploy/vps-500r-price-watcher.env.example` only after the dedicated
 scheduler task has passed a live check. The watcher is read-only and publishes
 short-lived Redis events with `detected_at_ms`, `offer_id`, and the observed
 price change. The scheduler logs `event_age_ms` when it consumes the event.
+When `WATCHER_EVENT_FAST_PATH_ENABLED=true`, the engine attempts a safe
+event-driven repricing before the normal market fetch and falls back to the
+ordinary cycle if the event or own-lot cache is not trusted.
 
 Expected effect:
 

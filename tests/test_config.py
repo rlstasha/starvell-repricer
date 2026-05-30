@@ -24,6 +24,8 @@ def clean_runtime_env(monkeypatch):
         "SLOW_MAX_INTERVAL_SECONDS",
         "PRICE_WATCHER_ENABLED",
         "PRICE_WATCHER_POSITIONS",
+        "WATCHER_EVENT_FAST_PATH_ENABLED",
+        "WATCHER_EVENT_OWN_LOT_CACHE_MAX_AGE_SECONDS",
     ):
         monkeypatch.delenv(env_name, raising=False)
     return monkeypatch
@@ -159,6 +161,8 @@ def test_request_pacing_defaults_are_safe_without_group_overrides(clean_runtime_
     assert settings.fast_mode_cooldown_max_interval_seconds == 2.5
     assert settings.post_update_interval_multiplier == 1.0
     assert settings.post_update_interval_position_amounts == (500,)
+    assert settings.watcher_event_fast_path_enabled is False
+    assert settings.watcher_event_own_lot_cache_max_age_seconds == 30.0
     assert settings.price_watcher_enabled is False
     assert settings.price_watcher_interval_ms == 300
     assert settings.price_watcher_position_amounts == (500, 800, 1000)
